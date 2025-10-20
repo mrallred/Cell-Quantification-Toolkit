@@ -304,8 +304,7 @@ class ROIEditor(WindowAdapter):
 
     def _toggle_ready_status(self, event):
         """Updates the image's status in the project object."""
-        # No need to commit ROI changes here - that's handled by the Update button
-        self.image_obj.status = "Ready to Quantify" if self.ready_checkbox.isSelected() else "Pending ROIs"
+        self.image_obj.status = "Ready to Quantify" if self.ready_checkbox.isSelected() else "In Progress"
         self._set_unsaved_changes(True)
         
     def _save_and_close(self, event=None):

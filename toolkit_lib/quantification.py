@@ -47,10 +47,24 @@ class QuantificationDialog(JDialog):
         settings_panel.setBorder(BorderFactory.createTitledBorder("Processing Options"))
 
         # workflow selection
-        workflows = ["cFosDAB+ Detection (Generic Model)", "cFosDAB+ Detection (region specific model)"]
-        settings_panel.add(JLabel("Choose Your Quantification Type: "))
+        workflows = ["Cell Detection & Counting"]
+        settings_panel.add(JLabel("Choose Your Quantification Workflow: "))
         self.workflow_combo = JComboBox(workflows)
+        self.workflow_combo.addActionListener(self._on_workflow_change)
         settings_panel.add(self.workflow_combo)
+
+        # Ilastik Model Selection options
+        self._get_models()
+        models = self.models_dict.keys()
+        self.pixel_model_label = JLabel("Choose a trained Ilastik Pixel Classification Project")
+        settings_panel.add(self.pixel_model_label)
+        self.pixel_model_combo = JComboBox(models)
+        settings_panel.add(self.pixel_model_combo)
+
+        self.object_model_label = JLabel("Choose a trained Ilastik Object Classification Project")
+        settings_panel.add(self.object_model_label)
+        self.object_model_combo = JComboBox(models)
+        settings_panel.add(self.object_model_combo)
 
         # Verbose images or no
         settings_panel.add(JLabel("Display Options: "))
@@ -68,21 +82,37 @@ class QuantificationDialog(JDialog):
         main_panel.add(button_panel, BorderLayout.SOUTH)
 
         self.pack()
+        self._on_workflow_change(None)
+
+    def _on_workflow_change(self, event):
+        """Shows or hides options based on the selected workflow."""
+        selected_workflow = self.workflow_combo.getSelectedItem()
+
+        is_2step_ilastik_workflow = False
+        if selected_workflow == "Cell Detection & Counting":
+            is_2step_ilastik_workflow = True
+
+        self.pixel_model_label.setVisible(is_2step_ilastik_workflow)
+        self.object_model_label.setVisible(is_2step_ilastik_workflow)
+        self.pixel_model_combo.setVisible(is_2step_ilastik_workflow)
+        self.object_model_combo.setVisible(is_2step_ilastik_workflow)
+
+        # Re-pack the dialog to adjust its size to fit the visible components.
+        self.pack()
 
     def _run_action(self, event):
         """ Gathers settings into dictionary and closes dialog """
         selected_workflow = self.workflow_combo.getSelectedItem()
 
-        if selected_workflow == "cFosDAB+ Detection (Generic Model)": 
+        if selected_workflow == "Cell Detection & Counting": 
             self.settings = {
+                'workflow': selected_workflow,
                 'images': self.selected_images,
-                'pixel_classifier': self.available_models['PIXEL_cFosDAB_TiffIO_Generic'],
-                'object_classifier': self.available_models['OBJECT_cFosDAB_TiffIO_Generic'],  
+                'pixel_classifier': self.models_dict[self.pixel_model_combo.getSelectedItem()],
+                'object_classifier': self.models_dict[self.object_model_combo.getSelectedItem()],  
                 'show_images': self.show_images_checkbox.isSelected()
                 }
-        elif selected_workflow == "cFosDAB+ Detection (region specific model)":
-            IJ.error("NOT IMPLEMENTED", "Havnent made this yet. use the generic model.")
-        
+            
         self.dispose()
 
     def _cancel_action(self,event):
@@ -98,38 +128,15 @@ class QuantificationDialog(JDialog):
     
     def _get_models(self):
         """
-        Finds models in a dedicated folder inside Fiji's 'lib' directory.
-        This works by locating the core ImageJ .jar file
-        to determine the Fiji root directory, regardless of how
-        the application was launched.
+        Finds models in the Cell_Quantification_Toolkit folder. Returns a dictionary of key:value pairs as display_name:full_path
         """
-        from java.net import URLDecoder
-        from java.lang import System
-
-        MODELS_FOLDER_NAME = "cell-quantifier-toolkit-models"
         models = {}
         
         try:
-            class_loader = IJ.getClassLoader()
-            if class_loader is None:
-                raise IOError("Could not get ImageJ ClassLoader.")
-
-            resource_url = class_loader.getResource("IJ_Props.txt")
-            if resource_url is None:
-                raise IOError("Could not find core resource 'IJ_Props.txt'. Is Fiji installed correctly?")
-
-            url_str = URLDecoder.decode(resource_url.toString(), "UTF-8")
-            path_part = url_str.split("!")[0].replace("jar:file:", "")
-
-            if System.getProperty("os.name").lower().startswith("windows") and path_part.startswith("/"):
-                path_part = path_part[1:]
-
-            jar_file = File(path_part)
-            fiji_root_file = jar_file.getParentFile().getParentFile()
-            fiji_root = fiji_root_file.getAbsolutePath()
-           
-            models_dir = os.path.join(fiji_root, "lib", MODELS_FOLDER_NAME)
-
+            plugins_dir = IJ.getDirectory("plugins")
+            plugin_folder_name = "Cell_Quantification_Toolkit"
+            toolkit_dir = os.path.join(plugins_dir, plugin_folder_name)
+            models_dir = os.path.join(toolkit_dir, "models")
             if os.path.isdir(models_dir):
                 for f in os.listdir(models_dir):
                     if f.lower().endswith('.ilp'):
@@ -143,12 +150,13 @@ class QuantificationDialog(JDialog):
             IJ.log("Error discovering models: " + str(e))
             IJ.log(traceback.format_exc())
 
-        return models
+        self.models_dict = models
 
 class ProgressDialog(JDialog):
-    """ A simple, non-modal dialog to display a progress bar. """
+    """ A simple, modal dialog to display a progress bar. """
     def __init__(self, parent_frame, title, max_value):
-        super(ProgressDialog, self).__init__(parent_frame, title, False)
+        super(ProgressDialog, self).__init__(parent_frame, title, True)
+        self.setDefaultCloseOperation(JDialog.DO_NOTHING_ON_CLOSE)
         self.progress_bar = JProgressBar(0, max_value)
         self.progress_bar.setStringPainted(True)
         self.add(self.progress_bar)
@@ -179,7 +187,6 @@ class QuantificationWorker(SwingWorker):
             def run(self):
                 self.dialog.progress_bar.setValue(self.value)
 
-        # --- Main processing logic ---
         images_to_process = self.settings['images']
 
         # Set status to "Processing" at the beginning
@@ -255,34 +262,35 @@ class QuantificationWorker(SwingWorker):
 
                         imp_cropped.show()
 
-                        # Run external processing (e.g., ilastik)
-                        result_imp = self._run_ilastik_classification(roi, temp_cropped_path, image_obj.filename, prob_map_path)
+                        if self.settings.get('workflow', True) == "Cell Detection & Counting":
+                            # Run external processing (e.g., ilastik)
+                            result_imp = self._run_ilastik_classification(roi, temp_cropped_path, image_obj.filename, prob_map_path)
 
-                        if not self.settings.get('show_images', True):
-                            if imp_cropped and imp_cropped.isVisible():
-                                imp_cropped.close()
+                            if not self.settings.get('show_images', True):
+                                if imp_cropped and imp_cropped.isVisible():
+                                    imp_cropped.close()
 
-                        # Analyze the results in Fiji
-                        analysis = self._analyze_results(result_imp, roi, roi_x, roi_y)
+                            # Analyze the results in Fiji
+                            analysis = self._analyze_results(result_imp, roi, roi_x, roi_y)
 
-                        if not self.settings.get('show_images', True):
-                            if result_imp:
-                                result_imp.changes = False
-                                result_imp.close()
+                            if not self.settings.get('show_images', True):
+                                if result_imp:
+                                    result_imp.changes = False
+                                    result_imp.close()
 
-                        if analysis['outlines']:
-                            all_image_outlines.extend(analysis['outlines'])
+                            if analysis['outlines']:
+                                all_image_outlines.extend(analysis['outlines'])
 
-                        # Collect the result for this single ROI piece
-                        single_roi_result = {
-                            'filename': image_obj.filename,
-                            'roi_name': roi.getName(),
-                            'roi_area': roi.getStatistics().area,
-                            'bregma_value': bregma_val,
-                            'cell_count': analysis['count'],
-                            'total_cell_area': analysis['total area']
-                        }
-                        self.all_results.append(single_roi_result)
+                            # Collect the result for this single ROI piece
+                            single_roi_result = {
+                                'filename': image_obj.filename,
+                                'roi_name': roi.getName(),
+                                'roi_area': roi.getStatistics().area,
+                                'bregma_value': bregma_val,
+                                'cell_count': analysis['count'],
+                                'total_cell_area': analysis['total area']
+                            }
+                            self.all_results.append(single_roi_result)
 
                     except Exception as e:
                         IJ.log("ERROR processing ROI #{} ('{}') in '{}': {}".format(i, roi.getName(), image_obj.filename, e))
@@ -445,7 +453,6 @@ class QuantificationWorker(SwingWorker):
 
         # 2. Use the Image Calculator's "AND" operation to apply the ROI mask
         # to the original Ilastik label image.
-        from ij.plugin import ImageCalculator
         ic = ImageCalculator()
         ic.run("AND", result_imp, mask_imp)
 

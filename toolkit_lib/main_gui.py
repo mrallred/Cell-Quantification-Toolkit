@@ -257,8 +257,8 @@ class ProjectManagerGUI(WindowAdapter):
         if settings:
             progress_dialog = ProgressDialog(self.frame, "Processing images...", 100)
             worker = QuantificationWorker(self, self.project, settings, progress_dialog)
-            progress_dialog.setVisible(True)
             worker.execute()
+            progress_dialog.setVisible(True)
 
     def import_images_action(self, event):
         """Opens a file chooser and starts the background import process."""
@@ -424,7 +424,7 @@ class ImageImportWorker(SwingWorker):
                 
                 # Update the project data structure in memory
                 new_image = ProjectImage(dest_file.getName(), self.project.root_dir)
-                new_image.status = "Pending ROIs"
+                new_image.status = "In Progress"
                 self.project.images.append(new_image)
                 self.newly_added_count += 1
             except Exception as e:

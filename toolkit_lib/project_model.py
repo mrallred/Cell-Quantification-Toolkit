@@ -14,7 +14,7 @@ class ProjectImage(object):
         self.outline_path = os.path.join(project_path, "Final_Cell_Selections", base_name + "_Outlines.zip")
 
         self.rois = [] # list of dictionaries
-        self.status = "Pending ROIs" 
+        self.status = "In Progress" 
     
     def has_outlines(self):
         """ Check if image has corrosponding cell outline selections file """
@@ -82,7 +82,7 @@ class Project(object):
                             headers = ['filename', 'roi_name', 'roi_area', 'bregma_value', 'cell_count', 'total_cell_area' ]
 
                         if headers:
-                            with open(path, 'w') as csvfile:
+                            with open(path, 'wb') as csvfile:
                                 writer = csv.writer(csvfile)
                                 writer.writerow(headers)
                                 IJ.log("Created missing project database: {}".format(path))
@@ -167,7 +167,7 @@ class Project(object):
         for f in sorted(os.listdir(self.paths['images'])):
             if f.lower().endswith(('.tif', '.tiff', 'jpg', 'jpeg')) and f not in existing_filenames:
                 new_image = ProjectImage(f, self.root_dir)
-                new_image.status = "Pending ROIs"
+                new_image.status = "In Progress"
                 new_image._load_rois_from_zip() # new images
                 self.images.append(new_image)
 
