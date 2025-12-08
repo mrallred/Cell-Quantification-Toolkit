@@ -40,7 +40,7 @@ class ProjectManagerGUI(WindowAdapter):
         self.save_proj_item = None
         
         self.frame = JFrame("Project Manager")
-        self.frame.setSize(900, 700)
+        self.frame.setSize(1100, 700)
         self.frame.setLayout(BorderLayout())
         self.frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE)
 
@@ -116,12 +116,14 @@ class ProjectManagerGUI(WindowAdapter):
         button_panel = JPanel(FlowLayout(FlowLayout.RIGHT))
 
         self.import_button = JButton("Import Images", enabled=False)
+        self.remove_button = JButton("Remove Selected Image", enabled=False)
         self.select_all_button = JButton("Select All / None")
         self.roi_button = JButton("Define/Edit ROIs", enabled=False)
         self.quant_button = JButton("Run Quantification", enabled=False)
         self.show_results_button = JButton("Show Results", enabled=False)
 
         button_panel.add(self.import_button)
+        button_panel.add(self.remove_button)
         button_panel.add(self.select_all_button)
         button_panel.add(self.roi_button)
         button_panel.add(self.quant_button)
@@ -131,6 +133,7 @@ class ProjectManagerGUI(WindowAdapter):
         self.frame.add(control_panel, BorderLayout.SOUTH)
 
         self.import_button.addActionListener(self.import_images_action)
+        self.remove_button.addActionListener(self.remove_images_action)
         self.select_all_button.addActionListener(self.toggle_select_all_action)
         self.roi_button.addActionListener(self.open_roi_editor_action)
         self.quant_button.addActionListener(self.open_quantification_dialog_action)
@@ -193,7 +196,8 @@ class ProjectManagerGUI(WindowAdapter):
 
             # Enable/disable action buttons based on how many images are selected
             self.roi_button.setEnabled(selection_count == 1)
-            self.quant_button.setEnabled(selection_count > 0)
+            # self.quant_button.setEnabled(selection_count > 0)
+            self.remove_button.setEnabled(selection_count > 0)
 
             if selection_count == 1:
                 selected_row = self.image_table.getSelectedRow()
@@ -259,6 +263,37 @@ class ProjectManagerGUI(WindowAdapter):
             worker = QuantificationWorker(self, self.project, settings, progress_dialog)
             worker.execute()
             progress_dialog.setVisible(True)
+
+    def remove_images_action(self, event):
+        """ Removes selected image(s) and all of their associated data (ROIs, outlines) from the project file """
+        selected_rows = self.image_table.getSelectedRows()
+        if not selected_rows:
+            return
+        
+        # Confirm deletion
+        count = len(selected_rows)
+        message = ("Are you sure you want to permanently delete these {} image(s) "
+                   "and all associated ROI and result files?\n\nThis action cannot be undone.".format(count))
+        title = "Confirm Deletion"
+        
+        result = JOptionPane.showConfirmDialog(self.frame, message, title, 
+                                               JOptionPane.YES_NO_OPTION, 
+                                               JOptionPane.WARNING_MESSAGE)
+        
+        if result != JOptionPane.YES_OPTION:
+            return
+        
+        model_indices = [self.image_table.convertRowIndexToModel(row) for row in selected_rows]
+        images_to_delete = [self.project.images[idx] for idx in model_indices]
+
+        deleted_count = self.project.remove_images(images_to_delete)
+        if deleted_count > 0:
+            self.set_unsaved_changes(True)
+            self.save_project_action(None) # This syncs the DB and resets the unsaved flag
+            self.status_label.setText("Successfully removed {} image(s).".format(deleted_count))
+    
+        self.update_ui_for_project()
+
 
     def import_images_action(self, event):
         """Opens a file chooser and starts the background import process."""
@@ -343,31 +378,44 @@ class ProjectManagerGUI(WindowAdapter):
         if not self.project:
             return
         
-        # Update name
+        # Update project name label
         self.project_name_label.setText("Project: " + self.project.name)
         
-        # Image table
-        while self.image_table_model.getRowCount() > 0:
-            self.image_table_model.removeRow(0)
+        # 1. Get the table's selection model and temporarily remove our listener.
+        selection_model = self.image_table.getSelectionModel()
+        listeners = selection_model.getListSelectionListeners()
+        for l in listeners:
+            selection_model.removeListSelectionListener(l)
         
-        for img in self.project.images:
-            roi_file_status = "Yes" if img.has_roi() else "No"
-            self.image_table_model.addRow([
-                img.filename,
-                roi_file_status,
-                len(img.rois),
-                img.status
-            ])
+        try:
+            # Clear the table efficiently and repopulate it. 
+            self.image_table_model.setRowCount(0) 
+            
+            for img in self.project.images:
+                roi_file_status = "Yes" if img.has_roi() else "No"
+                self.image_table_model.addRow([
+                    img.filename,
+                    roi_file_status,
+                    len(img.rois),
+                    img.status
+                ])
+        finally:
+            # Re-attach the listener so the UI works normally again.
 
-        # update file tree 
+            for l in listeners:
+                selection_model.addListSelectionListener(l)
+
+
+        # Update file tree view
         root_node = DefaultMutableTreeNode(self.project.name)
         for name, path in self.project.paths.items():
-            # show directorys and key files
             if os.path.isdir(path) or name.endswith('_db'):
                 node = DefaultMutableTreeNode(os.path.basename(path))
                 root_node.add(node)
-
         self.tree_model.setRoot(root_node)
+
+        # 4. Manually call the listener logic to ensure the details pane is correctly updated
+        self.on_image_selection(None)
 
     def update_view_for_image(self, updated_image):
         """

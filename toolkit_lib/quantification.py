@@ -356,7 +356,8 @@ class QuantificationWorker(SwingWorker):
             pixel_prob_path = prob_map_path + "_probabilities.tif"
             object_prob_path = prob_map_path + "_objects.tif"
 
-            # Case 1: The final object classification file already exists.
+            # Case 1: The final object classification file al
+            #  exists.
             if os.path.exists(object_prob_path):
                 IJ.log("Found existing object file, skipping Ilastik processing for: " + os.path.basename(object_prob_path))
                 result_imp = IJ.openImage(object_prob_path)

@@ -159,7 +159,7 @@ class Project(object):
         self.images = sorted(images_map.values(), key=lambda img: img.filename)
 
     def _scan_for_new_images(self):
-        """ Scans images folder for any files not already loaded from the DBs. """
+        """ Scans images folder for any files not already loaded from the DBs. Adds these images into the project list. """
         if not os.path.isdir(self.paths['images']):
             return
         
@@ -170,6 +170,38 @@ class Project(object):
                 new_image.status = "In Progress"
                 new_image._load_rois_from_zip() # new images
                 self.images.append(new_image)
+
+    def remove_images(self, images_to_delete):
+        """
+        Permanently deletes image files and their associated data (ROIs, outlines)
+        from the disk and removes them from the project's internal list.
+
+        Args:
+            images_to_delete (list): A list of ProjectImage objects to remove.
+
+        Returns:
+            int: The number of images successfully removed.
+        """
+        deleted_count = 0
+        filenames_to_delete = {img.filename for img in images_to_delete}
+
+        for image in images_to_delete:
+            try:
+                # All files associated with this image object
+                files_to_remove = [image.full_path, image.roi_path, image.outline_path]
+                
+                for file_path in files_to_remove:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                
+                deleted_count += 1
+            except Exception as e:
+                IJ.log("Error deleting files for '{}': {}".format(image.filename, e))
+
+        # Rebuild the project's image list, excluding the deleted ones
+        self.images = [img for img in self.images if img.filename not in filenames_to_delete]
+        
+        return deleted_count
 
     def sync_project_db(self):
         """ Master save function that syncs both databases. """

@@ -1,4 +1,3 @@
-# --- Python Standard Library ---
 import os
 import traceback
 
@@ -16,7 +15,7 @@ from java.awt.event import WindowAdapter
 class ROIEditor(WindowAdapter):
     """ 
     Creates a JFrame with tools for creating, modifying, and managing ROIs 
-    for a single image using a robust "commit on action" model.
+    for a single image using a "commit on action" model.
     """
     def __init__(self, parent_gui, project, project_image):
         self.parent_gui = parent_gui
@@ -81,8 +80,8 @@ class ROIEditor(WindowAdapter):
         create_button = JButton("Create New From Selection", actionPerformed=self._create_new_roi)
         update_button = JButton("Update Selected ROI", actionPerformed=self._update_selected_roi)
         delete_button = JButton("Delete Selected ROI", actionPerformed=self._delete_selected_roi)
-        self.ready_checkbox = JCheckBox("Mark as Ready for Quantification")
-        is_ready = (self.image_obj.status == "Ready to Quantify")
+        self.ready_checkbox = JCheckBox("Mark as 'ROIs completed'", True)
+        is_ready = (self.image_obj.status == "ROIs completed")
         self.ready_checkbox.setSelected(is_ready)
         self.ready_checkbox.addActionListener(self._toggle_ready_status)
         save_button = JButton("Save All ROIs & Close", actionPerformed=self._save_and_close)
@@ -304,7 +303,7 @@ class ROIEditor(WindowAdapter):
 
     def _toggle_ready_status(self, event):
         """Updates the image's status in the project object."""
-        self.image_obj.status = "Ready to Quantify" if self.ready_checkbox.isSelected() else "In Progress"
+        self.image_obj.status = "ROIs completed" if self.ready_checkbox.isSelected() else "In Progress"
         self._set_unsaved_changes(True)
         
     def _save_and_close(self, event=None):
@@ -345,18 +344,18 @@ class ROIEditor(WindowAdapter):
                 self.roi_list.addListSelectionListener(l)
 
     def _refresh_roi_display(self, selected_index):
-        """Loads and displays the selected ROI on the image."""
-        self.imp.deleteRoi()
-        if -1 < selected_index < self.rm.getCount():
-            selected_roi = self.rm.getRoi(selected_index)
-            if selected_roi:
-                self.imp.setRoi(selected_roi.clone())
-        
+        """Loads and displays the selected ROI using the Manager's native select method."""
+        # Enforce "Show All" state
         if self.show_all_checkbox.isSelected():
             self.rm.runCommand("Show All")
         else:
             self.rm.runCommand("Show None")
-        self.imp.updateAndDraw()
+
+        # Then select the specific ROI to make it active and editable
+        if -1 < selected_index < self.rm.getCount():
+            self.rm.select(selected_index)
+        else:
+            self.imp.deleteRoi()
 
     def _save_all_rois_to_file(self):
         """Validates and saves ROI data to a .zip file."""
