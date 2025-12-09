@@ -15,16 +15,15 @@ from java.awt.event import WindowAdapter
 
 # Java Swing (GUI Framework)
 from javax.swing import (JFrame, JMenuBar, JMenu, JMenuItem, JSplitPane,
-                         JPanel, JScrollPane, JOptionPane, JTree, JTable,
+                         JPanel, JScrollPane, JOptionPane, JTable,
                          JButton, JLabel, JFileChooser, ListSelectionModel,
-                         BorderFactory, ProgressMonitor, SwingWorker)
+                         BorderFactory, ProgressMonitor, SwingWorker, DefaultListModel, JList)
 from javax.swing.table import AbstractTableModel, DefaultTableModel
-from javax.swing.tree import DefaultMutableTreeNode, DefaultTreeModel
 from javax.swing.border import EmptyBorder
 from javax.swing.filechooser import FileNameExtensionFilter
 
 #  Java AWT (Graphics & Layout)
-from java.awt import BorderLayout, FlowLayout, Font
+from java.awt import BorderLayout, FlowLayout, Font, GridLayout
 
 # Internal Modules
 from .project_model import Project, ProjectImage
@@ -74,11 +73,24 @@ class ProjectManagerGUI(WindowAdapter):
         self.project_name_label.setBorder(EmptyBorder(10,10,10,10))
         self.frame.add(self.project_name_label, BorderLayout.NORTH)
 
-        # File Tree
-        root_node = DefaultMutableTreeNode("Project")
-        self.tree_model = DefaultTreeModel(root_node)
-        self.file_tree = JTree(self.tree_model)
-        tree_scroll_pane = JScrollPane(self.file_tree)
+        # ROI Template List (replaces file tree)
+        self.template_list_model = DefaultListModel()
+        self.template_list = JList(self.template_list_model)
+        template_scroll_pane = JScrollPane(self.template_list)
+        template_scroll_pane.setBorder(BorderFactory.createTitledBorder("Regions to analyze"))
+
+        # Template management buttons
+        template_button_panel = JPanel(GridLayout(0, 1, 5, 5))
+        self.add_template_btn = JButton("Add Region", actionPerformed=self._add_template_action)
+        self.remove_template_btn = JButton("Remove Region", actionPerformed=self._remove_template_action)
+        self.add_template_btn.setEnabled(False)
+        self.remove_template_btn.setEnabled(False)
+        template_button_panel.add(self.add_template_btn)
+        template_button_panel.add(self.remove_template_btn)
+
+        left_panel = JPanel(BorderLayout())
+        left_panel.add(template_scroll_pane, BorderLayout.CENTER)
+        left_panel.add(template_button_panel, BorderLayout.SOUTH)
 
         right_panel = JPanel(BorderLayout())
 
@@ -101,8 +113,8 @@ class ProjectManagerGUI(WindowAdapter):
         right_split_pane.setDividerLocation(300)
         right_panel.add(right_split_pane, BorderLayout.CENTER)
 
-        # Main split pane for tree and tables
-        main_split_pane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, tree_scroll_pane, right_panel)
+        # Main split pane for template list and tables
+        main_split_pane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left_panel, right_panel)
         main_split_pane.setDividerLocation(220)
         self.frame.add(main_split_pane, BorderLayout.CENTER)
 
@@ -405,17 +417,15 @@ class ProjectManagerGUI(WindowAdapter):
             for l in listeners:
                 selection_model.addListSelectionListener(l)
 
-
-        # Update file tree view
-        root_node = DefaultMutableTreeNode(self.project.name)
-        for name, path in self.project.paths.items():
-            if os.path.isdir(path) or name.endswith('_db'):
-                node = DefaultMutableTreeNode(os.path.basename(path))
-                root_node.add(node)
-        self.tree_model.setRoot(root_node)
-
         # 4. Manually call the listener logic to ensure the details pane is correctly updated
         self.on_image_selection(None)
+        
+        # 5. Update the template list
+        self._update_template_list()
+        
+        # 6. Enable template buttons now that a project is loaded
+        self.add_template_btn.setEnabled(True)
+        self.remove_template_btn.setEnabled(True)
 
     def update_view_for_image(self, updated_image):
         """
@@ -433,6 +443,44 @@ class ProjectManagerGUI(WindowAdapter):
                 # Refresh the ROI details table as well
                 self.on_image_selection(None) # Pass a dummy event or refactor to take an index
                 break
+
+    def _update_template_list(self):
+        """Refreshes the template list display."""
+        self.template_list_model.clear()
+        if not self.project:
+            return
+        for t in self.project.roi_templates:
+            display = t['name']
+            if t.get('default_bregma'):
+                display += " (Bregma: {})".format(t['default_bregma'])
+            self.template_list_model.addElement(display)
+
+    def _add_template_action(self, event):
+        """Prompts user to add a new ROI template."""
+        name = JOptionPane.showInputDialog(self.frame, "Enter ROI region name:", "Add Template", JOptionPane.PLAIN_MESSAGE)
+        if name and name.strip():
+            # Check for duplicates
+            for t in self.project.roi_templates:
+                if t['name'].lower() == name.strip().lower():
+                    JOptionPane.showMessageDialog(self.frame, "A template with this name already exists.", "Duplicate", JOptionPane.WARNING_MESSAGE)
+                    return
+            self.project.roi_templates.append({'name': name.strip(), 'default_bregma': ''})
+            self._update_template_list()
+            self.set_unsaved_changes(True)
+
+    def _remove_template_action(self, event):
+        """Removes the selected template."""
+        idx = self.template_list.getSelectedIndex()
+        if idx == -1:
+            JOptionPane.showMessageDialog(self.frame, "Please select a template to remove.", "No Selection", JOptionPane.WARNING_MESSAGE)
+            return
+        template = self.project.roi_templates[idx]
+        result = JOptionPane.showConfirmDialog(self.frame, "Remove template '{}'?".format(template['name']), "Confirm", JOptionPane.YES_NO_OPTION)
+        if result == JOptionPane.YES_OPTION:
+            del self.project.roi_templates[idx]
+            self._update_template_list()
+            self.set_unsaved_changes(True)
+
 
 class ImageImportWorker(SwingWorker):
     """

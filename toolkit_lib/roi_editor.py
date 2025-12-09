@@ -25,6 +25,8 @@ class ROIEditor(WindowAdapter):
         self.unsaved_changes = False
         self.updating_fields = False  # Flag to prevent event cascades
         self.last_selected_index = -1 # Track the last selected ROI index
+        self.templates = self.project.roi_templates  # Reference to project templates
+        self.list_item_map = []  # Maps JList indices to {'type': 'template'/'roi', ...}
 
         # Open Image and create canvas and imagewindow to hold it
         self.imp = IJ.openImage(self.image_obj.full_path)
@@ -77,14 +79,18 @@ class ROIEditor(WindowAdapter):
         # Button panel for actions
         button_panel = JPanel(GridLayout(0, 1, 10, 10))
         button_panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10))
-        create_button = JButton("Create New From Selection", actionPerformed=self._create_new_roi)
-        update_button = JButton("Update Selected ROI", actionPerformed=self._update_selected_roi)
-        delete_button = JButton("Delete Selected ROI", actionPerformed=self._delete_selected_roi)
+        add_subregion_button = JButton("Add selection to current ROI", actionPerformed=self._add_subregion)
+        create_button = JButton("Create New ROI (not defined in project)", actionPerformed=self._create_new_roi)
+        update_button = JButton("Update Selection", actionPerformed=self._update_selected_roi)
+        delete_button = JButton("Delete Selection", actionPerformed=self._delete_selected_roi)
+        save_button = JButton("Save All ROIs & Close", actionPerformed=self._save_and_close)
+
         self.ready_checkbox = JCheckBox("Mark as 'ROIs completed'", True)
         is_ready = (self.image_obj.status == "ROIs completed")
         self.ready_checkbox.setSelected(is_ready)
         self.ready_checkbox.addActionListener(self._toggle_ready_status)
-        save_button = JButton("Save All ROIs & Close", actionPerformed=self._save_and_close)
+
+        button_panel.add(add_subregion_button)
         button_panel.add(create_button)
         button_panel.add(update_button)
         button_panel.add(delete_button)
@@ -167,27 +173,41 @@ class ROIEditor(WindowAdapter):
         return name_was_changed
 
     def _on_roi_select(self, event):
-        """ Handles a user manually selecting an ROI in the list. """
+        """ Handles a user manually selecting an item in the list. """
         if event.getValueIsAdjusting() or self.updating_fields:
             return
 
-        # Don't commit changes when switching ROIs - we only want to commit
-        # when explicitly saving or when the user is editing an existing ROI
-        # (not when creating new ones)
-
         selected_index = self.roi_list.getSelectedIndex()
-        if selected_index != -1:
+        if selected_index != -1 and selected_index < len(self.list_item_map):
             self.updating_fields = True
             try:
-                self._refresh_roi_display(selected_index)
-                selected_roi = self.rm.getRoi(selected_index)
-                if selected_roi:
-                    self.roi_name_field.setText(selected_roi.getName() or "")
-                    bregma_prop = selected_roi.getProperty("comment")
-                    if bregma_prop is not None:
-                        self.bregma_field.setText(str(bregma_prop))
+                item = self.list_item_map[selected_index]
+                
+                if item['type'] == 'template':
+                    # User clicked a template header
+                    template_name = item['template_name']
+                    self.roi_name_field.setText(template_name)
+                    # Find default bregma for this template
+                    for t in self.templates:
+                        if t['name'] == template_name:
+                            self.bregma_field.setText(t.get('default_bregma', ''))
+                            break
                     else:
-                        self.bregma_field.setText("")
+                        self.bregma_field.setText('')
+                    self.imp.deleteRoi()  # Clear any selection on image
+                    
+                elif item['type'] == 'roi':
+                    # User clicked a sub-region (actual ROI)
+                    roi_index = item['roi_index']
+                    self._refresh_roi_display_by_manager_index(roi_index)
+                    selected_roi = self.rm.getRoi(roi_index)
+                    if selected_roi:
+                        self.roi_name_field.setText(selected_roi.getName() or "")
+                        bregma_prop = selected_roi.getProperty("comment")
+                        if bregma_prop is not None:
+                            self.bregma_field.setText(str(bregma_prop))
+                        else:
+                            self.bregma_field.setText("")
             finally:
                 self.updating_fields = False
         else:
@@ -202,8 +222,8 @@ class ROIEditor(WindowAdapter):
 
     def _create_new_roi(self, event):
         """
-        Handles the entire ROI creation process as a self-contained transaction,
-        preventing event listener conflicts.
+        Creates a new ROI that is NOT associated with any template.
+        For template-based ROIs, use 'Add selection to current ROI' instead.
         """
         # Step 1: Validate that a new ROI can be created.
         current_roi = self.imp.getRoi()
@@ -215,6 +235,19 @@ class ROIEditor(WindowAdapter):
         if not new_name:
             JOptionPane.showMessageDialog(self.frame, "Please enter a name in the 'ROI Name' field.", "No Name Provided", JOptionPane.WARNING_MESSAGE)
             return
+
+        # Check if name matches a template - warn user
+        for t in self.templates:
+            if t['name'].lower() == new_name.lower():
+                result = JOptionPane.showConfirmDialog(
+                    self.frame, 
+                    "'{}' matches a template. Use 'Add selection to current ROI' instead?\nClick No to create as non-template ROI anyway.".format(new_name),
+                    "Template Name Detected", 
+                    JOptionPane.YES_NO_OPTION
+                )
+                if result == JOptionPane.YES_OPTION:
+                    return  # User chose to use the template workflow
+                break
 
         # Step 2: Save the current selection and create the new ROI object
         roi_clone = current_roi.clone()
@@ -266,33 +299,90 @@ class ROIEditor(WindowAdapter):
     def _update_selected_roi(self, event):
         """Updates the currently selected ROI with values from the text fields."""
         selected_index = self.roi_list.getSelectedIndex()
-        if selected_index == -1:
+        if selected_index == -1 or selected_index >= len(self.list_item_map):
             JOptionPane.showMessageDialog(self.frame, "Please select an ROI from the list to update.", "No ROI Selected", JOptionPane.WARNING_MESSAGE)
             return
         
+        item = self.list_item_map[selected_index]
+        if item['type'] != 'roi':
+            JOptionPane.showMessageDialog(self.frame, "Please select a sub-region (not a template header) to update.", "Invalid Selection", JOptionPane.WARNING_MESSAGE)
+            return
+        
+        roi_index = item['roi_index']
+        
         # Commit both metadata and geometry changes
-        if self._commit_changes_for_index(selected_index, commit_geometry=True):
+        if self._commit_changes_for_index(roi_index, commit_geometry=True):
             self.update_roi_list_from_manager()
         
         # Refresh to show the updated ROI
-        self._refresh_roi_display(selected_index)
+        self._refresh_roi_display_by_manager_index(roi_index)
         
 
 
     def _delete_selected_roi(self, event):
-        """Deletes the selected ROI from the manager."""
+        """Deletes the selected ROI(s) from the manager based on selection type."""
         selected_index = self.roi_list.getSelectedIndex()
-        if selected_index == -1:
-            JOptionPane.showMessageDialog(self.frame, "Please select an ROI from the list to delete.", "No ROI Selected", JOptionPane.WARNING_MESSAGE)
+        if selected_index == -1 or selected_index >= len(self.list_item_map):
+            JOptionPane.showMessageDialog(self.frame, "Please select an item from the list to delete.", "No Selection", JOptionPane.WARNING_MESSAGE)
             return
 
-        roi_name = self.rm.getRoi(selected_index).getName() or "Untitled"
-        result = JOptionPane.showConfirmDialog(self.frame, "Delete ROI '{}'?".format(roi_name), "Confirm Deletion", JOptionPane.YES_NO_OPTION)
-        if result != JOptionPane.YES_OPTION:
-            return
+        item = self.list_item_map[selected_index]
+        
+        if item['type'] == 'roi':
+            # Case 1: User selected a sub-selection - delete just that ROI
+            roi_index = item['roi_index']
+            roi_name = self.rm.getRoi(roi_index).getName() or "Untitled"
+            result = JOptionPane.showConfirmDialog(self.frame, "Delete ROI '{}'?".format(roi_name), "Confirm Deletion", JOptionPane.YES_NO_OPTION)
+            if result != JOptionPane.YES_OPTION:
+                return
 
-        self.rm.select(selected_index)
-        self.rm.runCommand("Delete")
+            self.rm.select(roi_index)
+            self.rm.runCommand("Delete")
+            
+        elif item['type'] == 'template':
+            template_name = item['template_name']
+            is_orphan = item.get('orphan', False)
+            is_undefined = item.get('undefined', False)
+            
+            if is_undefined:
+                # Case 2: Template with no ROIs - nothing to delete
+                JOptionPane.showMessageDialog(self.frame, "This template has no selections to delete.", "Nothing to Delete", JOptionPane.INFORMATION_MESSAGE)
+                return
+            
+            # Find all ROIs with this template name
+            rois_to_delete = []
+            for i, roi in enumerate(self.rm.getRoisAsArray()):
+                if roi.getName() == template_name:
+                    rois_to_delete.append(i)
+            
+            if not rois_to_delete:
+                JOptionPane.showMessageDialog(self.frame, "No ROIs found for this entry.", "Nothing to Delete", JOptionPane.INFORMATION_MESSAGE)
+                return
+            
+            if is_orphan:
+                # Case 3: Non-template header - delete all ROIs (removes the header too)
+                result = JOptionPane.showConfirmDialog(
+                    self.frame, 
+                    "Delete all {} ROIs named '{}'?\nThis will remove the entire entry.".format(len(rois_to_delete), template_name), 
+                    "Confirm Deletion", 
+                    JOptionPane.YES_NO_OPTION
+                )
+            else:
+                # Case 4: Template header - clear all sub-selections (template stays as undefined)
+                result = JOptionPane.showConfirmDialog(
+                    self.frame, 
+                    "Clear all {} selections for template '{}'?\nThe template will remain but show as undefined.".format(len(rois_to_delete), template_name), 
+                    "Confirm Clear", 
+                    JOptionPane.YES_NO_OPTION
+                )
+            
+            if result != JOptionPane.YES_OPTION:
+                return
+            
+            # Delete in reverse order to avoid index shifting issues
+            for roi_index in sorted(rois_to_delete, reverse=True):
+                self.rm.select(roi_index)
+                self.rm.runCommand("Delete")
         
         self.last_selected_index = -1
         self.update_roi_list_from_manager()
@@ -328,15 +418,61 @@ class ROIEditor(WindowAdapter):
     # --------------------------------------------------------------------------
     
     def update_roi_list_from_manager(self):
-        """Syncs the JList with the IJ ROI manager without triggering selection events."""
+        """Syncs the JList with hierarchical display: templates as headers, ROIs as indented sub-items."""
         listeners = self.roi_list.getListSelectionListeners()
         for l in listeners: 
             self.roi_list.removeListSelectionListener(l)
         try:
             current_selection = self.roi_list.getSelectedIndex()
             self.roi_list_model.clear()
-            for i, roi in enumerate(self.rm.getRoisAsArray()):
-                self.roi_list_model.addElement("{}. {}".format(i + 1, roi.getName() or "Untitled"))
+            self.list_item_map = []
+            
+            existing_rois = self.rm.getRoisAsArray()
+            
+            # Group ROIs by their name (matching to templates)
+            rois_by_name = {}
+            for i, roi in enumerate(existing_rois):
+                name = roi.getName() or "Untitled"
+                if name not in rois_by_name:
+                    rois_by_name[name] = []
+                rois_by_name[name].append(i)  # Store the manager index
+            
+            template_number = 0
+            
+            # First, iterate through templates in order
+            for template in self.templates:
+                template_name = template['name']
+                template_number += 1
+                
+                # Check if this template has any ROIs defined
+                matching_rois = rois_by_name.get(template_name, [])
+                
+                if matching_rois:
+                    # Template has ROIs - show as header
+                    self.roi_list_model.addElement("{}. {}".format(template_number, template_name))
+                    self.list_item_map.append({'type': 'template', 'template_name': template_name})
+                    
+                    # Add indented sub-items for each ROI
+                    for sub_num, roi_index in enumerate(matching_rois, 1):
+                        self.roi_list_model.addElement("      - {} {}".format(template_name, sub_num))
+                        self.list_item_map.append({'type': 'roi', 'roi_index': roi_index, 'template_name': template_name})
+                else:
+                    # Template has no ROIs - show as undefined
+                    self.roi_list_model.addElement("{}. {} (undefined)".format(template_number, template_name))
+                    self.list_item_map.append({'type': 'template', 'template_name': template_name, 'undefined': True})
+            
+            # Also show any ROIs that don't match a template (orphans)
+            for name, roi_indices in rois_by_name.items():
+                # Check if this name matches any template
+                is_template = any(t['name'] == name for t in self.templates)
+                if not is_template:
+                    template_number += 1
+                    self.roi_list_model.addElement("{}. {} (no template)".format(template_number, name))
+                    self.list_item_map.append({'type': 'template', 'template_name': name, 'orphan': True})
+                    for sub_num, roi_index in enumerate(roi_indices, 1):
+                        self.roi_list_model.addElement("      - {} {}".format(name, sub_num))
+                        self.list_item_map.append({'type': 'roi', 'roi_index': roi_index, 'template_name': name})
+            
             if -1 < current_selection < self.roi_list_model.getSize():
                 self.roi_list.setSelectedIndex(current_selection)
         finally:
@@ -354,6 +490,20 @@ class ROIEditor(WindowAdapter):
         # Then select the specific ROI to make it active and editable
         if -1 < selected_index < self.rm.getCount():
             self.rm.select(selected_index)
+        else:
+            self.imp.deleteRoi()
+
+    def _refresh_roi_display_by_manager_index(self, manager_index):
+        """Loads and displays an ROI by its index in the RoiManager."""
+        # Enforce "Show All" state
+        if self.show_all_checkbox.isSelected():
+            self.rm.runCommand("Show All")
+        else:
+            self.rm.runCommand("Show None")
+
+        # Select the specific ROI to make it active and editable
+        if -1 < manager_index < self.rm.getCount():
+            self.rm.select(manager_index)
         else:
             self.imp.deleteRoi()
 
@@ -376,6 +526,38 @@ class ROIEditor(WindowAdapter):
     def _toggle_show_all(self, event):
         """Toggles visibility of all ROIs."""
         self._refresh_roi_display(self.roi_list.getSelectedIndex())
+
+    def _add_subregion(self, event):
+        """Creates a new ROI with the same name as the selected template or ROI (for disconnected regions)."""
+        selected_index = self.roi_list.getSelectedIndex()
+        if selected_index == -1 or selected_index >= len(self.list_item_map):
+            JOptionPane.showMessageDialog(self.frame, "Select a template or existing ROI first.", "No Selection", JOptionPane.WARNING_MESSAGE)
+            return
+        
+        current_roi = self.imp.getRoi()
+        if not current_roi:
+            JOptionPane.showMessageDialog(self.frame, "Draw a selection on the image first.", "No Selection", JOptionPane.WARNING_MESSAGE)
+            return
+        
+        # Get the template name from the mapping
+        item = self.list_item_map[selected_index]
+        template_name = item['template_name']
+        
+        # Clone the current selection and give it the template name
+        roi_clone = current_roi.clone()
+        roi_clone.setName(template_name)
+        
+        # Find default bregma for this template
+        for t in self.templates:
+            if t['name'] == template_name:
+                default_bregma = t.get('default_bregma', '')
+                if default_bregma:
+                    roi_clone.setProperty("comment", default_bregma)
+                break
+        
+        self.rm.addRoi(roi_clone)
+        self.update_roi_list_from_manager()
+        self._set_unsaved_changes(True)
 
     def _set_unsaved_changes(self, state):
         """Updates the UI to show if there are unsaved changes."""

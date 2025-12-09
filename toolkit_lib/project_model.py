@@ -55,7 +55,9 @@ class Project(object):
         self.paths = self._discover_paths()
         self._verify_and_create_dirs()
         self.images = [] # list of ProjectImage objects
+        self.roi_templates = []  # List of {'name': str, 'default_bregma': str}
         self._load_project_db()
+        self._load_roi_templates()
         self._scan_for_new_images()
         self.images.sort(key=self._get_natural_sort_key)
 
@@ -79,7 +81,9 @@ class Project(object):
                         elif key == 'image_status_db': 
                             headers = ['filename', 'status']
                         elif key == 'results_db':
-                            headers = ['filename', 'roi_name', 'roi_area', 'bregma_value', 'cell_count', 'total_cell_area' ]
+                            headers = ['filename', 'roi_name', 'roi_area', 'bregma_value', 'cell_count', 'total_cell_area']
+                        elif key == 'roi_templates_db':
+                            headers = ['name', 'default_bregma']
 
                         if headers:
                             with open(path, 'wb') as csvfile:
@@ -103,7 +107,8 @@ class Project(object):
             'temp': os.path.join(self.root_dir, 'temp'),
             'roi_db': os.path.join(self.root_dir, 'Roi_DB.csv'),
             'image_status_db': os.path.join(self.root_dir, 'Image_Status_DB.csv'),
-            'results_db': os.path.join(self.root_dir, 'Results_DB.csv')
+            'results_db': os.path.join(self.root_dir, 'Results_DB.csv'),
+            'roi_templates_db': os.path.join(self.root_dir, 'ROI_Templates_DB.csv')
         }
 
     def _load_project_db(self):
@@ -204,10 +209,11 @@ class Project(object):
         return deleted_count
 
     def sync_project_db(self):
-        """ Master save function that syncs both databases. """
+        """ Master save function that syncs all databases. """
         roi_success = self._sync_roi_db()
         status_success = self._sync_image_status_db()
-        return roi_success and status_success
+        template_success = self._sync_roi_templates()
+        return roi_success and status_success and template_success
 
     def _sync_roi_db(self):
         """ Rewrites the Roi_DB.csv (ROI data) from memory. """
@@ -246,6 +252,33 @@ class Project(object):
             return True
         except IOError as e:
             IJ.log("Error syncing Image Status DB: {}".format(e))
+            return False
+
+    def _load_roi_templates(self):
+        """Loads ROI templates from the project's template database."""
+        db_path = self.paths['roi_templates_db']
+        self.roi_templates = []
+        if os.path.exists(db_path):
+            with open(db_path, 'r') as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    self.roi_templates.append({
+                        'name': row.get('name', ''),
+                        'default_bregma': row.get('default_bregma', '')
+                    })
+
+    def _sync_roi_templates(self):
+        """Writes ROI templates to the database file."""
+        db_path = self.paths['roi_templates_db']
+        headers = ['name', 'default_bregma']
+        try:
+            with open(db_path, 'wb') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=headers)
+                writer.writeheader()
+                writer.writerows(self.roi_templates)
+            return True
+        except IOError as e:
+            IJ.log("Error syncing ROI Templates DB: {}".format(e))
             return False
 
     
