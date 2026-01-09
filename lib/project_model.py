@@ -111,7 +111,7 @@ class Project(object):
                         headers = ['name', 'default_bregma']
 
                     if headers:
-                        with open(path, 'wb') as csvfile:
+                        with open(path, 'w') as csvfile:
                             writer = csv.writer(csvfile)
                             writer.writerow(headers)
                             IJ.log("Created missing project database: {}".format(path))
@@ -124,7 +124,7 @@ class Project(object):
             'images': os.path.join(self.root_dir, 'Images'),
             'rois': os.path.join(self.root_dir, 'ROI_Files'),
             'processed': os.path.join(self.root_dir, 'Processed_Images'),
-            'probabilities': os.path.join(self.root_dir, 'Ilastik_Probabilites'),
+            'probabilities': os.path.join(self.root_dir, 'Probabilities'),
             'cell_outlines': os.path.join(self.root_dir, 'Final_Cell_Selections'),
             'temp': os.path.join(self.root_dir, 'temp'),
             'roi_db': os.path.join(self.root_dir, 'Roi_DB.csv'),
@@ -188,7 +188,7 @@ class Project(object):
         
         existing_filenames = {img.filename for img in self.images}
         for f in sorted(os.listdir(self.paths['images'])):
-            if f.lower().endswith(('.tif', '.tiff', 'jpg', 'jpeg')) and f not in existing_filenames:
+            if f.lower().endswith(('.tif', '.tiff', '.jpg', '.jpeg', '.png')) and f not in existing_filenames:
                 new_image = ProjectImage(f, self.root_dir)
                 new_image.status = "In Progress"
                 new_image._load_rois_from_zip() # new images
@@ -238,7 +238,7 @@ class Project(object):
         db_path = self.paths['roi_db']
         headers = ['filename', 'roi_name', 'bregma', 'status']
         try:
-            with open(db_path, 'wb') as csvfile:
+            with open(db_path, 'w') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=headers)
                 writer.writeheader()
                 for image in self.images:
@@ -262,7 +262,7 @@ class Project(object):
         db_path = self.paths['image_status_db']
         headers = ['filename', 'status']
         try:
-            with open(db_path, 'wb') as csvfile:
+            with open(db_path, 'w') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=headers)
                 writer.writeheader()
                 for image in self.images:
@@ -290,7 +290,7 @@ class Project(object):
         db_path = self.paths['roi_templates_db']
         headers = ['name', 'default_bregma']
         try:
-            with open(db_path, 'wb') as csvfile:
+            with open(db_path, 'w') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=headers)
                 writer.writeheader()
                 writer.writerows(self.roi_templates)

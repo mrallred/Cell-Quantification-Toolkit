@@ -5,6 +5,7 @@ import json
 import datetime
 import traceback
 import imp
+import re
 
 from ij import IJ, WindowManager
 from ij.plugin.frame import RoiManager
@@ -22,9 +23,10 @@ from java.awt import BorderLayout, FlowLayout, GridLayout, CardLayout
 def _discover_workflows():
     """
     Scan the workflows folder and import all BaseWorkflow subclasses.
-    Returns a dict of {display_name: workflow_instance}
+    Returns a tuple of (dict of {display_name: workflow_instance}, list of error messages)
     """
     workflows = {}
+    errors = []
     try:
         plugins_dir = IJ.getDirectory("plugins")
         toolkit_dir = os.path.join(plugins_dir, "Cell_Quantification_Toolkit")
@@ -32,7 +34,7 @@ def _discover_workflows():
         
         if not os.path.isdir(workflows_dir):
             IJ.log("Workflows directory not found: " + workflows_dir)
-            return workflows
+            return workflows, errors
         
         # Add workflows dir to path if not present
         if workflows_dir not in sys.path:
@@ -42,7 +44,7 @@ def _discover_workflows():
         base_workflow_path = os.path.join(workflows_dir, 'base_workflow.py')
         if not os.path.exists(base_workflow_path):
             IJ.log("base_workflow.py not found")
-            return workflows
+            return workflows, errors
         
         base_namespace = {}
         execfile(base_workflow_path, base_namespace)
@@ -71,13 +73,21 @@ def _discover_workflows():
                         instance = obj()
                         workflows[instance.display_name] = instance
             except Exception as e:
+                errors.append("{}: {}".format(filename, str(e)))
                 IJ.log("Error loading workflow '{}': {}".format(filename, e))
                 IJ.log(traceback.format_exc())
     except Exception as e:
         IJ.log("Error discovering workflows: " + str(e))
         IJ.log(traceback.format_exc())
     
-    return workflows
+    return workflows, errors
+
+
+def _sanitize_filename(name):
+    """
+    Sanitize a string for use in filenames by replacing invalid characters.
+    """
+    return re.sub(r'[^\w\-]', '_', name)
 
 
 
@@ -94,7 +104,10 @@ class QuantificationDialog(JDialog):
         self.models_dict = self._get_models()
         
         # Discover available workflows
-        self.workflows_dict = _discover_workflows()
+        self.workflows_dict, self.workflow_errors = _discover_workflows()
+        if self.workflow_errors:
+            error_msg = "Some workflows failed to load:\n" + "\n".join(self.workflow_errors)
+            JOptionPane.showMessageDialog(parent_frame, error_msg, "Workflow Loading Errors", JOptionPane.WARNING_MESSAGE)
         if not self.workflows_dict:
             IJ.log("Warning: No workflows found in workflows folder.")
         
@@ -262,8 +275,8 @@ class QuantificationWorker(SwingWorker):
         Processes each ROI individually after loading all ROIs from the zip file.
         Uses an index to create unique temporary filenames, preventing overwrites.
         """
-        # Generate unique run ID for this processing session
-        self.run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        # Generate unique run ID for this processing session (includes microseconds to prevent collisions)
+        self.run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         
         # --- Helper class for updating the progress bar on the GUI thread ---
         class UpdateProgressBarTask(Runnable):
@@ -275,8 +288,10 @@ class QuantificationWorker(SwingWorker):
 
         images_to_process = self.settings['images']
 
-        # Set status to "Processing" at the beginning
+        # Set status to "Processing" at the beginning, storing previous status for rollback
+        previous_statuses = {}
         for image_obj in images_to_process:
+            previous_statuses[image_obj.filename] = image_obj.status
             image_obj.status = "Processing"
         
         # Immediately save and refresh the UI to show the "Processing" status
@@ -299,7 +314,11 @@ class QuantificationWorker(SwingWorker):
         for image_obj in images_to_process:
             try:    
                 all_image_outlines = []
-                if self.isCancelled(): 
+                if self.isCancelled():
+                    # Restore previous statuses on cancellation
+                    for img in images_to_process:
+                        if img.status == "Processing":
+                            img.status = previous_statuses.get(img.filename, "In Progress")
                     break
                 
                 if not image_obj.has_roi(): 
@@ -318,7 +337,11 @@ class QuantificationWorker(SwingWorker):
 
                 # 2. Loop through the loaded ROIs using enumerate to get a unique index 'i'
                 for i, roi in enumerate(all_rois_for_image):
-                    if self.isCancelled(): 
+                    if self.isCancelled():
+                        # Restore previous statuses on cancellation
+                        for img in images_to_process:
+                            if img.status == "Processing":
+                                img.status = previous_statuses.get(img.filename, "In Progress")
                         break
                     
                     temp_cropped_path = None
@@ -340,7 +363,9 @@ class QuantificationWorker(SwingWorker):
                         IJ.run(imp_cropped, "Crop", "")
                         
                         # 3. Add the unique index 'i' to the base_name to prevent file overwriting
-                        base_name = "{}_{}_{}" .format(os.path.splitext(image_obj.filename)[0], roi.getName(), i)
+                        # Sanitize ROI name to remove characters invalid for filenames
+                        safe_roi_name = _sanitize_filename(roi.getName())
+                        base_name = "{}_{}_{}".format(os.path.splitext(image_obj.filename)[0], safe_roi_name, i)
                         
                         temp_cropped_path = os.path.join(self.project.paths['temp'], base_name + "_cropped.tif")
                         prob_map_path = os.path.join(self.project.paths['probabilities'], base_name)
@@ -562,7 +587,7 @@ class QuantificationWorker(SwingWorker):
                 headers = base_headers + custom_columns
                 
                 file_exists = os.path.isfile(results_db_path)
-                with open(results_db_path, 'ab') as csvfile:
+                with open(results_db_path, 'a') as csvfile:
                     writer = csv.DictWriter(csvfile, fieldnames=headers, extrasaction='ignore')
                     if not file_exists or os.path.getsize(results_db_path) == 0:
                         writer.writeheader()
