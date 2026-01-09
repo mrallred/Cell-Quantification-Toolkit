@@ -5,7 +5,7 @@ from javax.swing import SwingUtilities
 
 DEV_MODE = True
 
-def dev_reload_toolkit_modules(base_dir, package_name="toolkit_lib"):
+def dev_reload_toolkit_modules(base_dir, package_name="lib"):
     """
     Safely reloads all modules within a specific package by first unloading
     them from memory and then deleting their compiled .class files.
@@ -41,9 +41,9 @@ if script_dir not in sys.path:
     sys.path.append(script_dir)
 
 if DEV_MODE:
-    dev_reload_toolkit_modules(script_dir, package_name="toolkit_lib")
+    dev_reload_toolkit_modules(script_dir, package_name="lib")
 
-from toolkit_lib.main_gui import ProjectManagerGUI
+from lib.main_gui import ProjectManagerGUI
 
 def create_and_show_gui():
     """Initializes and displays the main application window."""
