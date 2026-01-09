@@ -109,16 +109,15 @@ MyProject/
 │   └── {ImageName}_{ROIName}_{index}_probabilities.tif
 │   └── {ImageName}_{ROIName}_{index}_objects.tif
 ├── temp/                   # Temporary processing files (auto-cleaned)
-├── Image_Status_DB.csv     # Image processing status
-├── Roi_DB.csv              # ROI metadata
-├── ROI_Templates_DB.csv    # Predefined ROI names
-├── Results_DB.csv          # Quantification results
-└── processing_log.json     # Processing run metadata (JSON)
+├── project.json            # Unified project database (images, ROIs, templates)
+├── Results_DB.csv          # Quantification results (user-accessible)
+└── processing_log.json     # Processing run metadata
 ```
 
 **Key methods**:
-- `_verify_and_create_dirs()`: Ensures project structure exists
-- `_load_project_db()` / `sync_project_db()`: Load/save CSV databases
+- `_verify_and_create_dirs()`: Ensures project directories exist
+- `_load_project_json()` / `_save_project_json()`: Load/save unified JSON database
+- `_migrate_from_csv()`: Auto-migrates legacy CSV projects to JSON
 - `remove_images()`: Delete images and associated files
 
 ---
@@ -191,6 +190,7 @@ class BaseWorkflow:
     def get_settings_panel(models_dict) -> JPanel    # Custom UI
     def gather_settings(panel) -> dict               # Extract settings
     def get_result_columns() -> list[str]            # Custom CSV columns
+    def get_log_metadata(settings) -> dict           # Custom log metadata
     
     # REQUIRED:
     def process_roi(cropped_imp, temp_path, prob_map_path, settings) -> ImagePlus
@@ -249,16 +249,17 @@ flowchart TB
 ### 1. Folder-Based Projects
 Projects are simple directories with a defined structure. Data is stored in human-readable formats—CSV files for tabular data, JSON for structured metadata, and standard image formats—for maximum interoperability and easy external analysis.
 
-### 2. Dual Database Strategy: CSV + JSON
-- **CSV databases** (`Results_DB.csv`, `Image_Status_DB.csv`, etc.): Store row-oriented data that users may want to analyze in Excel, R, Python, or other tools
-- **JSON database** (`processing_log.json`): Stores hierarchical processing metadata, keyed by unique `run_id` timestamps. Each entry contains:
+### 2. Unified JSON Database
+- **`project.json`**: Stores all project state (images, statuses, ROI templates, cached ROI counts)
+- **`Results_DB.csv`**: Quantification results (kept as CSV for user analysis in Excel/R/Python)
+- **`processing_log.json`**: Processing run metadata, keyed by unique `run_id`. Each entry contains:
   - `processed_date`: ISO timestamp of when the run occurred
   - `workflow_name`: Which workflow was used
-  - `workflow_settings`: Complete configuration (classifiers, options)
+  - `workflow_metadata`: Workflow-specific info (e.g., classifier model names)
   - `images_processed`: List of image filenames in this run
   - `total_results`: Count of results generated
 
-This allows Results_DB.csv rows to reference their processing context via `processing_run_id`, enabling full reproducibility and audit trails.
+Legacy CSV projects are auto-migrated to JSON on first open.
 
 ### 3. Plugin Architecture for Workflows
 Workflows are discovered dynamically at runtime by scanning the `workflows/` folder. This allows adding new analysis methods without modifying core code.

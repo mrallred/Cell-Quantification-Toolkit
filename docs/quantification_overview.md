@@ -149,7 +149,7 @@ Base columns + workflow-specific columns:
 filename, roi_name, roi_area, bregma_value, processing_run_id, [workflow_columns...]
 ```
 
-> [!TIP]
+> [!NOTE]
 > **Metadata Coupling**: Each result row contains a `processing_run_id` (e.g., `20231025_143022`). This ID corresponds to an entry in `processing_log.json`, which stores the full snapshot of settings (thresholds, model paths, etc.) used to generate that result.
 
 Example for Brightfield cFos (each workflow defines its own columns via `get_result_columns()`):
@@ -161,14 +161,3 @@ filename, roi_name, roi_area, bregma_value, cell_count, total_cell_area
 > Multiple ROI sub-regions with the same name are aggregated in the final results, with bregma values averaged.
 
 ---
-
-## Creating Custom Workflows
-
-1. Copy `template_workflow.py` to a new file in `workflows/`
-2. Rename the class and set `display_name`
-3. Implement `process_roi()` with your detection logic
-4. Implement `analyze_results()` to extract measurements
-5. Optionally add custom settings via `get_settings_panel()` and `gather_settings()`
-6. Define custom CSV columns via `get_result_columns()`
-
-The workflow will be automatically discovered on next launch.

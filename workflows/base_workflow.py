@@ -58,6 +58,19 @@ class BaseWorkflow(object):
         """
         return []
     
+    def get_log_metadata(self, settings):
+        """
+        Return workflow-specific metadata to include in processing_log.json.
+        Override this to log model names, version info, or other workflow details.
+        
+        Args:
+            settings: dict of workflow settings from gather_settings()
+            
+        Returns:
+            dict of metadata to merge into the processing log entry
+        """
+        return {}
+    
     def process_roi(self, cropped_imp, temp_path, prob_map_path, settings):
         """
         Run classification/detection on a cropped ROI image.

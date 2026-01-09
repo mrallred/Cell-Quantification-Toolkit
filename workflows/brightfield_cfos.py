@@ -87,6 +87,15 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
         """Return custom columns for this workflow."""
         return ['cell_count', 'total_cell_area']
     
+    def get_log_metadata(self, settings):
+        """Return model names and settings for processing log."""
+        return {
+            'pixel_classifier': os.path.basename(settings.get('pixel_classifier', '')),
+            'object_classifier': os.path.basename(settings.get('object_classifier', '')),
+            'apply_watershed': settings.get('apply_watershed', True),
+            'exclude_edges': settings.get('exclude_edges', True)
+        }
+    
     def process_roi(self, cropped_imp, temp_path, prob_map_path, settings):
         """
         Run the full Ilastik workflow with resume capability.
@@ -241,17 +250,10 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
         if particle_outlines_relative is None:
             particle_outlines_relative = []
 
-        # Translate outlines to full image coordinates
-        particle_outlines_absolute = []
-        for outline in particle_outlines_relative:
-            current_bounds = outline.getBounds()
-            outline.setLocation(current_bounds.x + offset_x, current_bounds.y + offset_y)
-            particle_outlines_absolute.append(outline)
-
         return {
             'count': count,
             'total_area': total_area,
-            'outlines': particle_outlines_absolute,
+            'outlines': particle_outlines_relative,  # Translation handled by base code
             # Custom columns for CSV
             'cell_count': count,
             'total_cell_area': total_area

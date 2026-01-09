@@ -369,21 +369,10 @@ class TemplateWorkflow(BaseWorkflow):
         result_imp.changes = False
         result_imp.close()
         
-        # Translate outline coordinates from cropped to full image coordinates
-        outlines_absolute = []
-        for outline in particle_outlines:
-            bounds = outline.getBounds()
-            outline.setLocation(bounds.x + offset_x, bounds.y + offset_y)
-            outlines_absolute.append(outline)
-        
         # Return results dictionary
-        # Must include 'count', 'total_area', 'outlines'
-        # Plus any keys matching get_result_columns()
+        # Outlines are in cropped image coordinates - base code handles translation
         return {
-            # Required keys (by convention)
-            'count': count,
-            'total_area': total_area,
-            'outlines': outlines_absolute,
+            'outlines': particle_outlines,  # Optional: for cell selection visualization
             
             # Custom columns (must match get_result_columns())
             'object_count': count,

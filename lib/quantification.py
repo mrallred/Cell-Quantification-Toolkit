@@ -295,17 +295,11 @@ class QuantificationWorker(SwingWorker):
             image_obj.status = "Processing"
         
         # Immediately save and refresh the UI to show the "Processing" status
-        self.project._sync_image_status_db()
+        self.project.sync_project_db()
         SwingUtilities.invokeLater(self.parent_gui.update_ui_for_project)
         
-        # Calculate total number of individual ROIs for the progress bar
-        total_rois_to_process = 0
-        for img in images_to_process:
-            if img.has_roi():
-                rm_temp = RoiManager(True)
-                rm_temp.open(img.roi_path)
-                total_rois_to_process += rm_temp.getCount()
-                rm_temp.close()
+        # Calculate total ROIs from cached data (avoids reopening zip files)
+        total_rois_to_process = sum(len(img.rois) for img in images_to_process if img.has_roi())
 
         if total_rois_to_process == 0: 
             return "No ROIs to process."
@@ -392,6 +386,10 @@ class QuantificationWorker(SwingWorker):
                                     result_imp.close()
 
                             if analysis.get('outlines'):
+                                # Translate outlines from cropped to absolute coordinates
+                                for outline in analysis['outlines']:
+                                    bounds = outline.getBounds()
+                                    outline.setLocation(bounds.x + roi_x, bounds.y + roi_y)
                                 all_image_outlines.extend(analysis['outlines'])
 
                             # Collect the base result for this single ROI piece
@@ -504,10 +502,12 @@ class QuantificationWorker(SwingWorker):
                 except (TypeError, ValueError):
                     pass  # Skip non-serializable values
         
+        workflow = self.settings.get('workflow')
         return {
             'processed_date': datetime.datetime.now().isoformat(),
             'workflow_name': self.settings.get('workflow_name', 'Unknown'),
             'workflow_settings': serializable_settings,
+            'workflow_metadata': workflow.get_log_metadata(self.settings) if workflow else {},
             'images_processed': [img.filename for img in self.settings.get('images', [])],
             'total_results': len(self.all_results)
         }

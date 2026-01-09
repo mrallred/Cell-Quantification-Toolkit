@@ -1,5 +1,7 @@
 import os
 import csv
+import json
+import datetime
 from ij import IJ
 from ij.plugin.frame import RoiManager
 from javax.swing import JOptionPane
@@ -50,15 +52,25 @@ class ProjectImage(object):
 
 class Project(object):
     """ Class representing a project, holding its structure and data once opened from folder """
+    
+    # Current project.json schema version
+    PROJECT_VERSION = "1.0"
+    
     def __init__(self, root_dir):
         self.root_dir = root_dir
         self.name = os.path.basename(os.path.normpath(root_dir))
         self.paths = self._discover_paths()
         self._verify_and_create_dirs()
-        self.images = [] # list of ProjectImage objects
+        self.images = []  # list of ProjectImage objects
         self.roi_templates = []  # List of {'name': str, 'default_bregma': str}
-        self._load_project_db()
-        self._load_roi_templates()
+        
+        # Load from JSON if exists, otherwise try CSV migration
+        if os.path.exists(self.paths['project_db']):
+            self._load_project_json()
+        elif self._has_legacy_csv_files():
+            self._migrate_from_csv()
+            self._save_project_json()  # Save migrated data
+        
         self._scan_for_new_images()
         self.images.sort(key=self._get_natural_sort_key)
 
@@ -70,24 +82,19 @@ class Project(object):
             return float('inf')
         
     def _verify_and_create_dirs(self):
-        """ Check for essential project files, verifies with user if missing, then creates the files if user confirms"""
+        """ Check for essential project directories, verifies with user if missing, then creates if user confirms"""
         missing_dirs = []
-        missing_files = {}
-
-        # Files that are created on-demand by other modules, not during project setup
-        on_demand_files = ['results_db']
         
-        for key, path in self.paths.items():
-            if key in on_demand_files:
-                continue  # Skip files that are created on-demand
-            if not os.path.exists(path):
-                if path.endswith(".csv"):
-                    missing_files[key] = path
-                else:
-                    missing_dirs.append(path)
+        # Only check directories, JSON/CSV files are created on-demand
+        dir_keys = ['images', 'rois', 'processed', 'probabilities', 'cell_outlines', 'temp']
+        
+        for key in dir_keys:
+            path = self.paths.get(key)
+            if path and not os.path.exists(path):
+                missing_dirs.append(path)
                
-        # If missing, prompt user
-        if missing_dirs or missing_files:
+        # If missing dirs, prompt user
+        if missing_dirs:
             result = JOptionPane.showConfirmDialog(None, "This is not currently a project folder.\nEnsure you opened the correct folder if working on an existing project.\n\nWould like to create a new project here?", "Missing Project Files", JOptionPane.YES_NO_OPTION)
             if result != JOptionPane.YES_OPTION:
                 raise Exception("Project Creation Cancelled")
@@ -100,24 +107,6 @@ class Project(object):
                 except OSError as e:
                     IJ.log("Error creating directory {}: {}".format(dir_path, e))
 
-            for key, path in missing_files.items():
-                try:
-                    headers = []
-                    if key == 'roi_db':
-                        headers = ['filename', 'roi_name', 'bregma', 'status']
-                    elif key == 'image_status_db': 
-                        headers = ['filename', 'status']
-                    elif key == 'roi_templates_db':
-                        headers = ['name', 'default_bregma']
-
-                    if headers:
-                        with open(path, 'w') as csvfile:
-                            writer = csv.writer(csvfile)
-                            writer.writerow(headers)
-                            IJ.log("Created missing project database: {}".format(path))
-                except OSError as e:
-                    IJ.log("Error creating directory {}: {}".format(path, e))
-
     def _discover_paths(self):
         """ Creates dict of essential project components """
         return {
@@ -127,11 +116,101 @@ class Project(object):
             'probabilities': os.path.join(self.root_dir, 'Probabilities'),
             'cell_outlines': os.path.join(self.root_dir, 'Final_Cell_Selections'),
             'temp': os.path.join(self.root_dir, 'temp'),
+            'project_db': os.path.join(self.root_dir, 'project.json'),
+            'results_db': os.path.join(self.root_dir, 'Results_DB.csv'),
+            # Legacy CSV paths (for migration)
             'roi_db': os.path.join(self.root_dir, 'Roi_DB.csv'),
             'image_status_db': os.path.join(self.root_dir, 'Image_Status_DB.csv'),
-            'results_db': os.path.join(self.root_dir, 'Results_DB.csv'),
             'roi_templates_db': os.path.join(self.root_dir, 'ROI_Templates_DB.csv')
         }
+    
+    def _has_legacy_csv_files(self):
+        """Check if legacy CSV database files exist."""
+        return (os.path.exists(self.paths['image_status_db']) or 
+                os.path.exists(self.paths['roi_db']) or
+                os.path.exists(self.paths['roi_templates_db']))
+    
+    def _load_project_json(self):
+        """Load project state from project.json."""
+        try:
+            with open(self.paths['project_db'], 'r') as f:
+                data = json.load(f)
+            
+            # Load ROI templates
+            self.roi_templates = data.get('roi_templates', [])
+            
+            # Load images
+            images_dir = self.paths['images']
+            images_data = data.get('images', {})
+            
+            for filename, img_data in images_data.items():
+                # Only load if image file still exists
+                image_path = os.path.join(images_dir, filename)
+                if not os.path.exists(image_path):
+                    continue
+                    
+                img = ProjectImage(filename, self.root_dir)
+                img.status = img_data.get('status', 'In Progress')
+                # ROIs are loaded from zip file as source of truth
+                img._load_rois_from_zip()
+                self.images.append(img)
+                
+        except (IOError, ValueError) as e:
+            IJ.log("Error loading project.json: {}".format(e))
+    
+    def _save_project_json(self):
+        """Save project state to project.json."""
+        try:
+            # Build images dict and count total ROIs
+            images_data = {}
+            total_roi_count = 0
+            for img in self.images:
+                roi_count = len(img.rois)
+                total_roi_count += roi_count
+                images_data[img.filename] = {
+                    'status': img.status,
+                    'roi_count': roi_count,  # Cached count for progress bar
+                    'rois': img.rois  # Convenience copy, zip is source of truth
+                }
+            
+            data = {
+                'version': self.PROJECT_VERSION,
+                'created': datetime.datetime.now().isoformat(),
+                'last_modified': datetime.datetime.now().isoformat(),
+                'total_roi_count': total_roi_count,  # Cached for progress bar
+                'roi_templates': self.roi_templates,
+                'images': images_data
+            }
+            
+            # Preserve original created date if file exists
+            if os.path.exists(self.paths['project_db']):
+                try:
+                    with open(self.paths['project_db'], 'r') as f:
+                        existing = json.load(f)
+                        data['created'] = existing.get('created', data['created'])
+                except (IOError, ValueError):
+                    pass
+            
+            with open(self.paths['project_db'], 'w') as f:
+                json.dump(data, f, indent=2)
+            return True
+            
+        except (IOError, ValueError) as e:
+            IJ.log("Error saving project.json: {}".format(e))
+            return False
+    
+    def _migrate_from_csv(self):
+        """
+        Migrate legacy CSV databases to project.json format.
+        CSV files are preserved as backup.
+        """
+        IJ.log("Migrating project from CSV to JSON format...")
+        
+        # Load from legacy CSV methods
+        self._load_project_db()  # Load image status and ROI data
+        self._load_roi_templates()  # Load templates
+        
+        IJ.log("Migration complete. CSV files preserved as backup.")
 
     def _load_project_db(self):
         """
@@ -227,53 +306,11 @@ class Project(object):
         return deleted_count
 
     def sync_project_db(self):
-        """ Master save function that syncs all databases. """
-        roi_success = self._sync_roi_db()
-        status_success = self._sync_image_status_db()
-        template_success = self._sync_roi_templates()
-        return roi_success and status_success and template_success
-
-    def _sync_roi_db(self):
-        """ Rewrites the Roi_DB.csv (ROI data) from memory. """
-        db_path = self.paths['roi_db']
-        headers = ['filename', 'roi_name', 'bregma', 'status']
-        try:
-            with open(db_path, 'w') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=headers)
-                writer.writeheader()
-                for image in self.images:
-                    if not image.rois:
-                        continue # Skip images with no ROIs
-                    for roi_data in image.rois:
-                        row = {
-                            'filename': image.filename,
-                            'roi_name': roi_data.get('roi_name', 'N/A'),
-                            'bregma': roi_data.get('bregma', 'N/A'),
-                            'status': roi_data.get('status', 'Pending')
-                        }
-                        writer.writerow(row)
-            return True
-        except IOError as e:
-            IJ.log("Error syncing ROI DB: {}".format(e))
-            return False
-
-    def _sync_image_status_db(self):
-        """ Rewrites the Image_Status_DB.csv from memory. """
-        db_path = self.paths['image_status_db']
-        headers = ['filename', 'status']
-        try:
-            with open(db_path, 'w') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=headers)
-                writer.writeheader()
-                for image in self.images:
-                    writer.writerow({'filename': image.filename, 'status': image.status})
-            return True
-        except IOError as e:
-            IJ.log("Error syncing Image Status DB: {}".format(e))
-            return False
+        """ Master save function that saves project state to JSON. """
+        return self._save_project_json()
 
     def _load_roi_templates(self):
-        """Loads ROI templates from the project's template database."""
+        """Loads ROI templates from legacy CSV database (for migration)."""
         db_path = self.paths['roi_templates_db']
         self.roi_templates = []
         if os.path.exists(db_path):
@@ -284,19 +321,3 @@ class Project(object):
                         'name': row.get('name', ''),
                         'default_bregma': row.get('default_bregma', '')
                     })
-
-    def _sync_roi_templates(self):
-        """Writes ROI templates to the database file."""
-        db_path = self.paths['roi_templates_db']
-        headers = ['name', 'default_bregma']
-        try:
-            with open(db_path, 'w') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=headers)
-                writer.writeheader()
-                writer.writerows(self.roi_templates)
-            return True
-        except IOError as e:
-            IJ.log("Error syncing ROI Templates DB: {}".format(e))
-            return False
-
-    
