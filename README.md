@@ -40,7 +40,7 @@ MyProject/
 
 ## Creating Custom Workflows
 
-See [`docs/creating_workflows.md`](docs/creating_workflows.md) for a guide on building your own detection workflows.
+See [`docs/creating_workflows.md`](docs/creating_workflows.md) for a guide on building your own quantification workflows in a python script.
 
 ## Documentation
 

@@ -6,35 +6,16 @@ The quantification module (`lib/quantification.py`) performs automated cell dete
 
 ## Architecture
 
-```
-QuantificationDialog
-        │
-        ├──[selects]──► BaseWorkflow Plugin
-        │
-        └──[starts]──► QuantificationWorker
-                              │
-                       [for each ROI]
-                              │
-                              ▼
-                    workflow.process_roi()
-                              │
-                        [returns]
-                              │
-                              ▼
-                      Result ImagePlus
-                              │
-                       [passed to]
-                              │
-                              ▼
-                  workflow.analyze_results()
-                              │
-                        [returns]
-                              │
-                              ▼
-                     Measurements Dict
-                              │
-                              ▼
-                        Results CSV
+```mermaid
+flowchart TD
+    QD[QuantificationDialog]
+    QD -->|selects| BWP[BaseWorkflow Plugin]
+    QD -->|starts| QW[QuantificationWorker]
+    QW -->|for each ROI| PR["workflow.process_roi()"]
+    PR -->|returns| RIP[Result ImagePlus]
+    RIP -->|passed to| AR["workflow.analyze_results()"]
+    AR -->|returns| MD[Measurements Dict]
+    MD --> CSV[Results CSV]
 ```
 
 | Component | Purpose |
@@ -91,14 +72,14 @@ workflows/base_workflow.py
 ### 2. Batch Processing
 `QuantificationWorker.doInBackground()` processes each image:
 
-```
-For each selected image:
-├── Load all ROIs from .zip file
-└── For each ROI:
-    ├── Crop image region → save temp file
-    ├── workflow.process_roi() → classification/detection
-    ├── workflow.analyze_results() → measurements
-    └── Collect cell outlines
+```mermaid
+flowchart TD
+    A[For each selected image] --> B[Load all ROIs from .zip file]
+    B --> C[For each ROI]
+    C --> D["Crop image region → save temp file"]
+    D --> E["workflow.process_roi() → classification/detection"]
+    E --> F["workflow.analyze_results() → measurements"]
+    F --> G[Collect cell outlines]
 ```
 
 ### 3. Workflow Delegation
@@ -120,16 +101,13 @@ In `done()`, results are aggregated by `(filename, roi_name)`:
 
 ## Data Flow
 
-```
-Input Image + ROI
-       ↓
-   [Crop to ROI]
-       ↓
-   [workflow.process_roi()]  →  Intermediate outputs (e.g., *_probabilities.tif)
-       ↓
-   [workflow.analyze_results()]
-       ↓
-   Results: count, total_area, outlines, custom columns
+```mermaid
+flowchart TD
+    A[Input Image + ROI] --> B[Crop to ROI]
+    B --> C["workflow.process_roi()"]
+    C -->|produces| D["Intermediate outputs (e.g., *_probabilities.tif)"]
+    C --> E["workflow.analyze_results()"]
+    E --> F["Results: count, total_area, outlines, custom columns"]
 ```
 
 ---
