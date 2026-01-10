@@ -1,21 +1,52 @@
 # Cell Quantification Toolkit
 
-A Fiji plugin for automated cell detection and quantification in microscopy images.
+A Fiji plugin for project-based, ROI-specific, and automated cell detection and quantification in microscopy images. 
+
+So far I've only implemented a cell detection workflow for brightfield DAB-stained images, which utilizes Ilastik pixel and object classification. However, the quantification module is designed to be easily extensible to allow development of custom workflows for different types of microscopy images.
 
 ## Features
 
-- **Project-based workflow** — Organize images, ROIs, and results in folder-based projects
-- **ROI management** — Draw and edit regions of interest with easy prefilled template names
-- **Batch processing** — Automated quantification across multiple images and ROIs
-- **Plugin workflows** — Extensible architecture for custom detection algorithms
+- **Project-based workflow** — Organize images, ROIs, and results in folder-based projects, enabling reproducible workflows.
+- **ROI management** — Draw and edit regions of interest (ROIs) easily with prefilled template names, where multiple selections can be made for a single ROI and multiple ROIs can be selected in a single image.
+- **Batch processing** — Automated quantification across multiple images and ROIs.
+- **Quantification workflows** — Extensible architecture allowing for custom quantification workflows.
 - **Resume capability** — Intermediate files preserved for interrupted processing
 - **Full traceability** — Every result linked to processing settings via JSON metadata
 
 ## Installation
 
-1. Copy the `Cell_Quantification_Toolkit` folder to your Fiji `plugins/` directory
-2. Restart Fiji
-3. Access via **Plugins → Cell Quantification Toolkit**
+The best way to install the Cell Quantification Toolkit is from the Fiji update site. 
+
+1. If you dont have Fiji and Ilastik installed you must install them first:
+
+    - **Fiji**: Download and install the correct version from [Fiji](https://imagej.net/software/fiji/downloads)
+
+    - **Ilastik**: Ilastik is a machine learning-based image analysis tool that is used to train and apply pixel and object classification models. Download and install the correct version from [Ilastik](https://www.ilastik.org/download).
+
+2. Once you have Fiji and Ilastik installed you can install the update sites:
+
+    - **Ilastik ImageJ Plugin**: [Ilastik ImageJ Plugin](https://www.ilastik.org/documentation/fiji_export/plugin) allows for easy integration of some Ilastik workflows into Fiji. This is how the ilastik pixel and object classification workflows are used in the Cell Quantification Toolkit. Install it through their Fiji update site.
+
+    - **Cell Quantification Toolkit**: The main update site for the toolkit.
+
+    1. Open Fiji
+    2. Go to `Help > Update... > Manage Update Sites`
+    3. Search for `ilastik` 
+        - URL: `https://sites.imagej.net/ilastik/`
+    4. Press the check box next to `ilastik` 
+    5. Press `Add Unlisted Site` and enter the details:
+        - Name: `Cell Quantification Toolkit`
+        - URL: `https://sites.imagej.net/cell-quantifier-workflows/`
+    6. Press `Apply and Close` 
+    7. Press `Apply Changes` and restart Fiji
+    8. Configure the Ilastik excutable location:
+        - Select `Plugins > ilastik > Configure ilastik executable location`
+        - Enter the path to the Ilastik executable file (e.g. `/Applications/ilastik-1.4.1.post1-arm64-OSX.app/Contents/MacOS/ilastik` or `C:\Program Files\ilastik\bin\ilastik.exe`)
+        - Press `OK`
+    
+    Now you're ready to go!
+
+
 
 ## Quick Start
 
