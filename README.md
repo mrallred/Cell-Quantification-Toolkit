@@ -4,15 +4,6 @@ A Fiji plugin for project-based, ROI-specific, and automated cell detection and 
 
 So far I've only implemented a cell detection workflow for brightfield DAB-stained images, which utilizes Ilastik pixel and object classification. However, the quantification module is designed to be easily extensible to allow development of custom workflows for different types of microscopy images.
 
-## Features
-
-- **Project-based workflow** — Organize images, ROIs, and results in folder-based projects, enabling reproducible workflows.
-- **ROI management** — Draw and edit regions of interest (ROIs) easily with prefilled template names, where multiple selections can be made for a single ROI and multiple ROIs can be selected in a single image.
-- **Batch processing** — Automated quantification across multiple images and ROIs.
-- **Quantification workflows** — Extensible architecture allowing for custom quantification workflows.
-- **Resume capability** — Intermediate files preserved for interrupted processing
-- **Full traceability** — Every result linked to processing settings via JSON metadata
-
 ## Installation
 
 The best way to install the Cell Quantification Toolkit is from the Fiji update site. 

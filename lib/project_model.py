@@ -1,6 +1,7 @@
 import os
 import csv
 import json
+import shutil
 import datetime
 from ij import IJ
 from ij.plugin.frame import RoiManager
@@ -10,18 +11,30 @@ class ProjectImage(object):
     """ Simple class to hold info about a single image file """
     def __init__(self, filename, project_path):
         self.filename = filename
+        self.project_path = project_path  # Store for run-based lookups
         self.full_path = os.path.join(project_path, "Images", filename)
 
         base_name, _ = os.path.splitext(self.filename)
         self.roi_path = os.path.join(project_path, "ROI_Files", base_name + "_ROIs.zip")
-        self.outline_path = os.path.join(project_path, "Final_Cell_Selections", base_name + "_Outlines.zip")
 
         self.rois = [] # list of dictionaries
         self.status = "In Progress" 
     
     def has_outlines(self):
-        """ Check if image has corrosponding cell outline selections file """
-        return os.path.exists(self.outline_path)
+        """ Check if any run contains cell outlines for this image """
+        runs_dir = os.path.join(self.project_path, "Runs")
+        if not os.path.exists(runs_dir):
+            return False
+        
+        base_name, _ = os.path.splitext(self.filename)
+        outline_name = base_name + "_Outlines.zip"
+        
+        # Check any run folder for this image's outlines
+        for run_id in os.listdir(runs_dir):
+            outline_path = os.path.join(runs_dir, run_id, "Cell_Selections", outline_name)
+            if os.path.exists(outline_path):
+                return True
+        return False
 
     def has_roi(self):
         """ Checks if corrosponding ROI file exists """
@@ -53,8 +66,8 @@ class ProjectImage(object):
 class Project(object):
     """ Class representing a project, holding its structure and data once opened from folder """
     
-    # Current project.json schema version
-    PROJECT_VERSION = "1.0"
+    # Current project.json schema version - 2.0 = run-based structure
+    PROJECT_VERSION = "2.0"
     
     def __init__(self, root_dir):
         self.root_dir = root_dir
@@ -63,6 +76,9 @@ class Project(object):
         self._verify_and_create_dirs()
         self.images = []  # list of ProjectImage objects
         self.roi_templates = []  # List of {'name': str, 'default_bregma': str}
+        
+        # Check for migration to run-based structure
+        self._migrate_to_run_based()
         
         # Load from JSON if exists, otherwise try CSV migration
         if os.path.exists(self.paths['project_db']):
@@ -86,7 +102,8 @@ class Project(object):
         missing_dirs = []
         
         # Only check directories, JSON/CSV files are created on-demand
-        dir_keys = ['images', 'rois', 'processed', 'probabilities', 'cell_outlines', 'temp']
+        # Runs folder is created on-demand during processing, not at project open
+        dir_keys = ['images', 'rois', 'probabilities', 'temp']
         
         for key in dir_keys:
             path = self.paths.get(key)
@@ -114,15 +131,74 @@ class Project(object):
             'rois': os.path.join(self.root_dir, 'ROI_Files'),
             'processed': os.path.join(self.root_dir, 'Processed_Images'),
             'probabilities': os.path.join(self.root_dir, 'Probabilities'),
-            'cell_outlines': os.path.join(self.root_dir, 'Final_Cell_Selections'),
+            'runs': os.path.join(self.root_dir, 'Runs'),
             'temp': os.path.join(self.root_dir, 'temp'),
             'project_db': os.path.join(self.root_dir, 'project.json'),
-            'results_db': os.path.join(self.root_dir, 'Results_DB.csv'),
-            # Legacy CSV paths (for migration)
+            # Legacy paths (for migration detection/cleanup)
+            'legacy_cell_outlines': os.path.join(self.root_dir, 'Final_Cell_Selections'),
+            'legacy_results_db': os.path.join(self.root_dir, 'Results_DB.csv'),
+            'legacy_processing_log': os.path.join(self.root_dir, 'processing_log.json'),
             'roi_db': os.path.join(self.root_dir, 'Roi_DB.csv'),
             'image_status_db': os.path.join(self.root_dir, 'Image_Status_DB.csv'),
             'roi_templates_db': os.path.join(self.root_dir, 'ROI_Templates_DB.csv')
         }
+    
+    def _migrate_to_run_based(self):
+        """
+        Migrate from old structure (Final_Cell_Selections, Results_DB.csv) to run-based.
+        Prompts user before deleting old results. ROIs and images are preserved.
+        """
+        
+        # Check if old structure files exist
+        old_files_exist = (
+            os.path.exists(self.paths['legacy_cell_outlines']) or
+            os.path.exists(self.paths['legacy_results_db']) or
+            os.path.exists(self.paths['legacy_processing_log'])
+        )
+        
+        if not old_files_exist:
+            return  # Nothing to migrate
+        
+        # Prompt user
+        msg = (
+            "This project uses an older results structure.\n\n"
+            "To use the new run-based organization, old results files will be deleted:\n"
+            "  - Final_Cell_Selections/\n"
+            "  - Results_DB.csv\n"
+            "  - processing_log.json\n\n"
+            "Your ROIs and images will be preserved.\n\n"
+            "Migrate to new structure?"
+        )
+        result = JOptionPane.showConfirmDialog(
+            None, msg, "Migrate Project", JOptionPane.YES_NO_OPTION
+        )
+        
+        if result != JOptionPane.YES_OPTION:
+            IJ.log("Migration skipped. Old results retained.")
+            return
+        
+        # Delete old files
+        try:
+            if os.path.exists(self.paths['legacy_cell_outlines']):
+                shutil.rmtree(self.paths['legacy_cell_outlines'])
+                IJ.log("Deleted: Final_Cell_Selections/")
+            
+            if os.path.exists(self.paths['legacy_results_db']):
+                os.remove(self.paths['legacy_results_db'])
+                IJ.log("Deleted: Results_DB.csv")
+            
+            if os.path.exists(self.paths['legacy_processing_log']):
+                os.remove(self.paths['legacy_processing_log'])
+                IJ.log("Deleted: processing_log.json")
+            
+            IJ.log("Migration complete. Project now uses run-based structure.")
+            
+        except Exception as e:
+            IJ.log("Migration error: " + str(e))
+            JOptionPane.showMessageDialog(
+                None, "Error during migration: " + str(e),
+                "Migration Error", JOptionPane.ERROR_MESSAGE
+            )
     
     def _has_legacy_csv_files(self):
         """Check if legacy CSV database files exist."""
@@ -289,12 +365,25 @@ class Project(object):
 
         for image in images_to_delete:
             try:
-                # All files associated with this image object
-                files_to_remove = [image.full_path, image.roi_path, image.outline_path]
+                # Delete main image and ROI files
+                files_to_remove = [image.full_path, image.roi_path]
                 
                 for file_path in files_to_remove:
                     if os.path.exists(file_path):
                         os.remove(file_path)
+                
+                # Delete outline files from all run folders
+                base_name, _ = os.path.splitext(image.filename)
+                outline_name = base_name + "_Outlines.zip"
+                runs_dir = self.paths.get('runs', '')
+                
+                if os.path.exists(runs_dir):
+                    for run_id in os.listdir(runs_dir):
+                        outline_path = os.path.join(
+                            runs_dir, run_id, 'Cell_Selections', outline_name
+                        )
+                        if os.path.exists(outline_path):
+                            os.remove(outline_path)
                 
                 deleted_count += 1
             except Exception as e:

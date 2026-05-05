@@ -546,15 +546,25 @@ class ROIEditor(WindowAdapter):
         # Clone the current selection and give it the template name
         roi_clone = current_roi.clone()
         roi_clone.setName(template_name)
-        
-        # Find default bregma for this template
-        for t in self.templates:
-            if t['name'] == template_name:
-                default_bregma = t.get('default_bregma', '')
-                if default_bregma:
-                    roi_clone.setProperty("comment", default_bregma)
-                break
-        
+
+        # Use the bregma from the field (the user may have edited it after the
+        # template default was prefilled). Fall back to the template default
+        # only when the field is empty.
+        bregma_value = self.bregma_field.getText().strip()
+        if not bregma_value:
+            for t in self.templates:
+                if t['name'] == template_name:
+                    bregma_value = t.get('default_bregma', '') or ''
+                    break
+
+        if bregma_value:
+            try:
+                float(bregma_value)
+                roi_clone.setProperty("comment", bregma_value)
+            except ValueError:
+                JOptionPane.showMessageDialog(self.frame, "Bregma must be a number.", "Invalid Input", JOptionPane.WARNING_MESSAGE)
+                return
+
         self.rm.addRoi(roi_clone)
         self.update_roi_list_from_manager()
         self._set_unsaved_changes(True)

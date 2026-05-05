@@ -9,6 +9,7 @@ import re
 
 from ij import IJ, WindowManager
 from ij.plugin.frame import RoiManager
+from ij.gui import PolygonRoi, Roi
 
 from java.lang import Runnable, System
 
@@ -90,6 +91,49 @@ def _sanitize_filename(name):
     return re.sub(r'[^\w\-]', '_', name)
 
 
+def _ensure_closed_area_roi(roi):
+    """
+    Ensures an ROI is a closed area selection suitable for cropping.
+    Converts open line ROIs (FREELINE, POLYLINE) to closed polygons.
+    Returns the original ROI if it's already an area type, or a new closed ROI.
+    """
+    roi_type = roi.getType()
+    
+    # Check if ROI is an open line type that needs closing
+    # Roi.FREELINE = 7, Roi.POLYLINE = 6
+    if roi_type == Roi.FREELINE or roi_type == Roi.POLYLINE:
+        # Get the polygon coordinates from the line ROI
+        polygon = roi.getPolygon()
+        if polygon and polygon.npoints > 2:
+            # Create a new closed polygon ROI from the same points
+            closed_roi = PolygonRoi(polygon.xpoints, polygon.ypoints, polygon.npoints, Roi.POLYGON)
+            # Preserve the original ROI's name and properties
+            closed_roi.setName(roi.getName())
+            comment = roi.getProperty("comment")
+            if comment:
+                closed_roi.setProperty("comment", comment)
+            IJ.log("INFO: Converted open line ROI '{}' to closed polygon for cropping.".format(roi.getName()))
+            return closed_roi
+        else:
+            IJ.log("WARNING: ROI '{}' has insufficient points to form a closed area.".format(roi.getName()))
+            return None
+    
+    # Check for point ROIs which cannot be cropped
+    # Roi.POINT = 10
+    if roi_type == Roi.POINT:
+        IJ.log("WARNING: ROI '{}' is a point selection and cannot be used for cropping. Skipping.".format(roi.getName()))
+        return None
+    
+    # Check for simple line ROIs
+    # Roi.LINE = 5
+    if roi_type == Roi.LINE:
+        IJ.log("WARNING: ROI '{}' is a straight line and cannot be used for cropping. Skipping.".format(roi.getName()))
+        return None
+    
+    # ROI is already an area type (RECTANGLE, OVAL, POLYGON, FREEROI, etc.)
+    return roi
+
+
 
 class QuantificationDialog(JDialog):
     """
@@ -142,6 +186,10 @@ class QuantificationDialog(JDialog):
         top_panel.add(JLabel("Display Options:"))
         self.show_images_checkbox = JCheckBox("Show images during processing", False)
         top_panel.add(self.show_images_checkbox)
+        
+        # Force recalculate option (deletes cached probability maps)
+        self.force_recalculate_checkbox = JCheckBox("Force recalculate probabilities", False)
+        top_panel.add(self.force_recalculate_checkbox)
         
         settings_container.add(top_panel, BorderLayout.NORTH)
 
@@ -202,7 +250,8 @@ class QuantificationDialog(JDialog):
                 'workflow': workflow,  # Store workflow instance, not name
                 'workflow_name': selected_name,
                 'images': self.selected_images,
-                'show_images': self.show_images_checkbox.isSelected()
+                'show_images': self.show_images_checkbox.isSelected(),
+                'force_recalculate': self.force_recalculate_checkbox.isSelected()
             }
             # Merge workflow-specific settings
             self.settings.update(workflow_settings)
@@ -278,6 +327,11 @@ class QuantificationWorker(SwingWorker):
         # Generate unique run ID for this processing session (includes microseconds to prevent collisions)
         self.run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         
+        # Create run folder structure: Runs/{run_id}/Cell_Selections/
+        self.run_folder = os.path.join(self.project.paths['runs'], self.run_id)
+        self.cell_selections_folder = os.path.join(self.run_folder, 'Cell_Selections')
+        os.makedirs(self.cell_selections_folder)  # Creates both folders
+        
         # --- Helper class for updating the progress bar on the GUI thread ---
         class UpdateProgressBarTask(Runnable):
             def __init__(self, dialog, value):
@@ -322,7 +376,10 @@ class QuantificationWorker(SwingWorker):
                 if not imp_original:
                     IJ.log("ERROR: Failed to open original image: " + image_obj.full_path)
                     continue
-                
+
+                if self.settings.get('show_images', False):
+                    imp_original.show()
+
                 # 1. Load ALL ROIs from the .zip file ONCE per image.
                 rm = RoiManager(True)
                 rm.open(image_obj.roi_path)
@@ -347,13 +404,20 @@ class QuantificationWorker(SwingWorker):
                         except (ValueError, TypeError):
                             bregma_val = 0.0
 
+                        # Ensure ROI is a valid closed area for cropping
+                        crop_roi = _ensure_closed_area_roi(roi)
+                        if crop_roi is None:
+                            # ROI type cannot be converted to area - skip this ROI
+                            IJ.log("Skipping ROI #{} ('{}') - not a valid area selection.".format(i, roi.getName()))
+                            continue
+                        
                         # Get bounding box coordinates for offsetting results later
-                        roi_x = roi.getBounds().x
-                        roi_y = roi.getBounds().y
+                        roi_x = crop_roi.getBounds().x
+                        roi_y = crop_roi.getBounds().y
 
                         # Create a duplicate for cropping to preserve the original image
                         imp_cropped = imp_original.duplicate()
-                        imp_cropped.setRoi(roi)
+                        imp_cropped.setRoi(crop_roi)
                         IJ.run(imp_cropped, "Crop", "")
                         
                         # 3. Add the unique index 'i' to the base_name to prevent file overwriting
@@ -365,7 +429,8 @@ class QuantificationWorker(SwingWorker):
                         prob_map_path = os.path.join(self.project.paths['probabilities'], base_name)
                         IJ.saveAs(imp_cropped, "Tiff", temp_cropped_path)
 
-                        imp_cropped.show()
+                        if self.settings.get('show_images', False):
+                            imp_cropped.show()
 
                         # Delegate to workflow plugin for processing
                         workflow = self.settings.get('workflow')
@@ -378,7 +443,8 @@ class QuantificationWorker(SwingWorker):
                                     imp_cropped.close()
 
                             # Analyze the results using workflow plugin
-                            analysis = workflow.analyze_results(result_imp, roi, roi_x, roi_y)
+                            # Pass crop_roi (the closed area version) to ensure mask creation works correctly
+                            analysis = workflow.analyze_results(result_imp, crop_roi, roi_x, roi_y, self.settings)
 
                             if not self.settings.get('show_images', False):
                                 if result_imp:
@@ -421,7 +487,7 @@ class QuantificationWorker(SwingWorker):
                             except Exception as ex:
                                 IJ.log("Warning: Could not delete temporary file " + temp_cropped_path)
 
-                        if not self.settings.get('show_images', True):
+                        if not self.settings.get('show_images', False):
                             self._cleanup_stray_windows()
                         
                         # Update progress
@@ -430,16 +496,19 @@ class QuantificationWorker(SwingWorker):
                         update_task = UpdateProgressBarTask(self.progress_dialog, progress)
                         SwingUtilities.invokeLater(update_task)
                 
-                # After processing all ROIs for an image, save the collected cell outlines
+                # After processing all ROIs for an image, save the collected cell outlines to run folder
                 if all_image_outlines:
                     outline_rm = RoiManager(True)
                     for outline_roi in all_image_outlines:
                         outline_rm.addRoi(outline_roi)
-                    outline_rm.runCommand("Save", image_obj.outline_path)
+                    # Save to run-based folder: Runs/{run_id}/Cell_Selections/{image}_Outlines.zip
+                    base_name, _ = os.path.splitext(image_obj.filename)
+                    outline_path = os.path.join(self.cell_selections_folder, base_name + "_Outlines.zip")
+                    outline_rm.runCommand("Save", outline_path)
                     outline_rm.close()
 
                 # Close the original image window if it's not meant to be shown
-                if not self.settings.get('show_images', True) and imp_original and imp_original.isVisible():
+                if not self.settings.get('show_images', False) and imp_original and imp_original.isVisible():
                     imp_original.close()
 
                 image_obj.status = "Completed" # Mark for final update
@@ -453,7 +522,8 @@ class QuantificationWorker(SwingWorker):
                 IJ.run("Collect Garbage", "")
                 System.gc()
 
-                self._cleanup_stray_windows()  
+                if not self.settings.get('show_images', False):
+                    self._cleanup_stray_windows()
 
         return "Quantification completed successfully for {} ROIs.".format(roi_counter)
                 
@@ -485,59 +555,48 @@ class QuantificationWorker(SwingWorker):
     
     def _build_metadata(self):
         """
-        Build a metadata dictionary with all JSON-serializable settings.
-        Automatically captures all workflow settings without requiring
-        workflow-specific implementation.
+        Build a metadata dictionary with relevant processing settings.
+        Only includes settings that affect processing output.
         """
-        # Filter settings to only JSON-serializable values
+        # Filter settings to only relevant, JSON-serializable values
+        # Exclude: internal keys (_prefix), workflow object, images list, display-only options
+        exclude_keys = {'workflow', 'workflow_name', 'images', 'show_images', 'force_recalculate'}
+        
         serializable_settings = {}
         for key, value in self.settings.items():
-            if isinstance(value, (str, int, float, bool, type(None))):
+            # Skip internal keys (start with _) and excluded keys
+            if key.startswith('_') or key in exclude_keys:
+                continue
+            # Only include JSON-serializable types
+            # Use basestring to cover both str and unicode in Python 2/Jython
+            if isinstance(value, (basestring, int, float, bool, type(None))):
                 serializable_settings[key] = value
             elif isinstance(value, (list, dict)):
-                # Attempt to serialize, skip if it fails
                 try:
                     json.dumps(value)
                     serializable_settings[key] = value
                 except (TypeError, ValueError):
                     pass  # Skip non-serializable values
         
-        workflow = self.settings.get('workflow')
         return {
             'processed_date': datetime.datetime.now().isoformat(),
             'workflow_name': self.settings.get('workflow_name', 'Unknown'),
             'workflow_settings': serializable_settings,
-            'workflow_metadata': workflow.get_log_metadata(self.settings) if workflow else {},
             'images_processed': [img.filename for img in self.settings.get('images', [])],
             'total_results': len(self.all_results)
         }
     
     def _save_processing_metadata(self):
         """
-        Save processing metadata to an append-only JSON log file.
-        Each run is keyed by its unique run_id for traceability.
+        Save processing metadata to the run folder as run_metadata.json.
+        Each run is self-contained with its own metadata file.
         """
         try:
-            metadata_path = os.path.join(
-                os.path.dirname(self.project.paths['results_db']), 
-                'processing_log.json'
-            )
+            date_prefix = datetime.datetime.now().strftime('%Y%m%d')
+            metadata_path = os.path.join(self.run_folder, '{}_run_metadata.json'.format(date_prefix))
             
-            # Load existing log or create new
-            existing = {}
-            if os.path.exists(metadata_path):
-                try:
-                    with open(metadata_path, 'r') as f:
-                        existing = json.load(f)
-                except (ValueError, IOError):
-                    IJ.log("Warning: Could not read existing processing_log.json, creating new.")
-            
-            # Add this run's metadata
-            existing[self.run_id] = self._build_metadata()
-            
-            # Write back
             with open(metadata_path, 'w') as f:
-                json.dump(existing, f, indent=2)
+                json.dump(self._build_metadata(), f, indent=2)
             
         except Exception as e:
             IJ.log("Warning: Could not save processing metadata: " + str(e))
@@ -581,16 +640,15 @@ class QuantificationWorker(SwingWorker):
 
                 final_results_list = list(aggregated_results.values())
                 
-                # Build headers: base columns + workflow-specific columns
-                results_db_path = self.project.paths['results_db']
-                base_headers = ['filename', 'roi_name', 'roi_area', 'bregma_value', 'processing_run_id']
+                # Build headers: base columns + workflow-specific columns (no run_id needed, it's in folder name)
+                date_prefix = datetime.datetime.now().strftime('%Y%m%d')
+                results_path = os.path.join(self.run_folder, '{}_results.csv'.format(date_prefix))
+                base_headers = ['filename', 'roi_name', 'roi_area', 'bregma_value']
                 headers = base_headers + custom_columns
                 
-                file_exists = os.path.isfile(results_db_path)
-                with open(results_db_path, 'a') as csvfile:
+                with open(results_path, 'w') as csvfile:
                     writer = csv.DictWriter(csvfile, fieldnames=headers, extrasaction='ignore')
-                    if not file_exists or os.path.getsize(results_db_path) == 0:
-                        writer.writeheader()
+                    writer.writeheader()
                     writer.writerows(final_results_list)
                 
                 # Save processing metadata to JSON log

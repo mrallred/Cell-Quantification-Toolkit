@@ -206,7 +206,7 @@ class TemplateWorkflow(BaseWorkflow):
         Return list of custom CSV column names for this workflow.
         
         These columns are added to the base columns (filename, roi_name, 
-        roi_area, bregma_value) in the Results_DB.csv output.
+        roi_area, bregma_value) in the per-run results.csv output.
         
         The analyze_results() method should return a dict containing
         values for each of these column names.
@@ -290,7 +290,7 @@ class TemplateWorkflow(BaseWorkflow):
     # ANALYZE RESULTS - Extract measurements from processed image
     # ========================================================================
     
-    def analyze_results(self, result_imp, roi, offset_x, offset_y):
+    def analyze_results(self, result_imp, roi, offset_x, offset_y, settings):
         """
         Analyze the processed result image and extract measurements.
         
@@ -304,6 +304,7 @@ class TemplateWorkflow(BaseWorkflow):
             roi: original ROI object (for masking if needed)
             offset_x: x coordinate of ROI bounding box (for coordinate translation)
             offset_y: y coordinate of ROI bounding box (for coordinate translation)
+            settings: dict containing workflow settings from gather_settings()
             
         Returns:
             dict with keys:
@@ -312,9 +313,6 @@ class TemplateWorkflow(BaseWorkflow):
                 - 'outlines': list of ROI objects for cell outlines
                 - Plus any keys matching get_result_columns()
         """
-        # Get settings for particle analysis
-        # Note: settings dict isn't passed here, but you stored them in __init__ 
-        # if needed, or use sensible defaults
         
         # Initialize ROI manager and results table
         rm = RoiManager(True)  # True = don't show window
@@ -365,9 +363,10 @@ class TemplateWorkflow(BaseWorkflow):
         rm.reset()
         rm.close()
         
-        # Clean up result image
-        result_imp.changes = False
-        result_imp.close()
+        # Clean up result image (keep open if user asked to see images)
+        if not settings.get('show_images', False):
+            result_imp.changes = False
+            result_imp.close()
         
         # Return results dictionary
         # Outlines are in cropped image coordinates - base code handles translation

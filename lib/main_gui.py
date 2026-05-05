@@ -20,7 +20,7 @@ from javax.swing import (JFrame, JMenuBar, JMenu, JMenuItem, JSplitPane,
                          BorderFactory, ProgressMonitor, SwingWorker, DefaultListModel, JList)
 from javax.swing.table import AbstractTableModel, DefaultTableModel
 from javax.swing.border import EmptyBorder
-from javax.swing.filechooser import FileNameExtensionFilter
+from javax.swing.filechooser import FileNameExtensionFilter, FileFilter
 
 #  Java AWT (Graphics & Layout)
 from java.awt import BorderLayout, FlowLayout, Font, GridLayout
@@ -30,6 +30,27 @@ from .project_model import Project, ProjectImage
 from .roi_editor import ROIEditor
 from .quantification import QuantificationDialog, QuantificationWorker, ProgressDialog
 from .results_viewer import ResultsViewer
+
+
+# Internal folder names that should be hidden during project folder selection
+INTERNAL_PROJECT_FOLDERS = {'Images', 'ROI_Files', 'Runs', 'Probabilities', 'temp'}
+
+
+class ProjectFolderFilter(FileFilter):
+    """
+    FileFilter that hides internal project folders from the file chooser.
+    This prevents users from accidentally navigating into and selecting
+    internal folders as project roots.
+    """
+    def accept(self, f):
+        if f.isDirectory():
+            # Hide folders that are internal to project structure
+            return f.getName() not in INTERNAL_PROJECT_FOLDERS
+        return False
+    
+    def getDescription(self):
+        return "Project Folders"
+
 
 class ProjectManagerGUI(WindowAdapter):
     """ Builds and manages the main GUI, facilitating dialogs and and controling the script """
@@ -166,6 +187,8 @@ class ProjectManagerGUI(WindowAdapter):
         chooser = JFileChooser()
         chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY)
         chooser.setDialogTitle("Select Project Directory")
+        # Apply filter to hide internal project folders from navigation
+        chooser.setFileFilter(ProjectFolderFilter())
         if chooser.showOpenDialog(self.frame) == JFileChooser.APPROVE_OPTION:
             project_dir = chooser.getSelectedFile().getAbsolutePath()
             self.load_project(project_dir)
@@ -191,8 +214,8 @@ class ProjectManagerGUI(WindowAdapter):
 
         selected_image = self.project.images[selected_row]
         
-        # The ResultsViewer will handle checking for the outline file
-        viewer = ResultsViewer(self.frame, selected_image)
+        # The ResultsViewer will scan run folders for this image's outlines
+        viewer = ResultsViewer(self.frame, selected_image, self.project)
         viewer.show()
 
     def on_image_selection(self, event):
@@ -377,6 +400,23 @@ class ProjectManagerGUI(WindowAdapter):
     # UI update logic
     def load_project(self, project_dir):
         """ Loads a project's data and update entire UI"""
+        # Safety check: detect if user selected an internal project folder
+        folder_name = os.path.basename(project_dir)
+        if folder_name in INTERNAL_PROJECT_FOLDERS:
+            parent_dir = os.path.dirname(project_dir)
+            result = JOptionPane.showConfirmDialog(
+                self.frame,
+                "You selected an internal project folder '{}'.\n"
+                "Did you mean to open the project at:\n{}?".format(folder_name, parent_dir),
+                "Confirm Project Location",
+                JOptionPane.YES_NO_OPTION
+            )
+            if result == JOptionPane.YES_OPTION:
+                project_dir = parent_dir
+            else:
+                self.status_label.setText("Project loading cancelled.")
+                return
+        
         self.status_label.setText("Loading Project {}".format(project_dir))
         try:
             self.project = Project(project_dir)

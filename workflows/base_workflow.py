@@ -58,19 +58,6 @@ class BaseWorkflow(object):
         """
         return []
     
-    def get_log_metadata(self, settings):
-        """
-        Return workflow-specific metadata to include in processing_log.json.
-        Override this to log model names, version info, or other workflow details.
-        
-        Args:
-            settings: dict of workflow settings from gather_settings()
-            
-        Returns:
-            dict of metadata to merge into the processing log entry
-        """
-        return {}
-    
     def process_roi(self, cropped_imp, temp_path, prob_map_path, settings):
         """
         Run classification/detection on a cropped ROI image.
@@ -86,7 +73,7 @@ class BaseWorkflow(object):
         """
         raise NotImplementedError("Subclasses must implement process_roi()")
     
-    def analyze_results(self, result_imp, roi, offset_x, offset_y):
+    def analyze_results(self, result_imp, roi, offset_x, offset_y, settings):
         """
         Analyze the processed result image and extract measurements.
         
@@ -95,12 +82,11 @@ class BaseWorkflow(object):
             roi: original ROI object (for masking)
             offset_x: x coordinate of ROI bounding box (for coordinate translation)
             offset_y: y coordinate of ROI bounding box (for coordinate translation)
+            settings: dict containing workflow settings from gather_settings()
             
         Returns:
-            dict with keys:
-                - 'count': int, number of detected objects
-                - 'total_area': float, sum of object areas
-                - 'outlines': list of ROI objects for cell outlines
-                - Plus any keys matching get_result_columns()
+            dict with:
+                - Keys matching get_result_columns() for CSV output
+                - Optional 'outlines': list of ROI objects for cell visualization
         """
         raise NotImplementedError("Subclasses must implement analyze_results()")

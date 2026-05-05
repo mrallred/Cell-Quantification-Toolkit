@@ -12,7 +12,7 @@ from ij.plugin.frame import RoiManager
 
 from java.lang import System
 
-from javax.swing import JPanel, JLabel, JComboBox, JCheckBox
+from javax.swing import JPanel, JLabel, JComboBox, JCheckBox, JSpinner, SpinnerNumberModel
 from java.awt import GridLayout, BorderLayout
 
 # BaseWorkflow is injected by the workflow loader - do not import
@@ -34,6 +34,7 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
         self.object_combo = None
         self.watershed_checkbox = None
         self.exclude_edges_checkbox = None
+        self.min_circularity_spinner = None
     
     def get_settings_panel(self, models_dict):
         """Create panel with pixel and object classifier dropdowns."""
@@ -61,6 +62,11 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
         self.exclude_edges_checkbox = JCheckBox("Exclude edge particles", True)
         panel.add(self.exclude_edges_checkbox)
         
+        # Circularity filter (0.0 = any shape, 1.0 = perfect circles only)
+        panel.add(JLabel("Min Circularity (0.0-1.0):"))
+        self.min_circularity_spinner = JSpinner(SpinnerNumberModel(0.0, 0.0, 1.0, 0.1))
+        panel.add(self.min_circularity_spinner)
+        
         # Store models_dict reference for gather_settings
         self._models_dict = models_dict
         
@@ -72,14 +78,20 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
         if self.pixel_combo and self.object_combo and self._models_dict:
             pixel_name = self.pixel_combo.getSelectedItem()
             object_name = self.object_combo.getSelectedItem()
-            settings['pixel_classifier'] = self._models_dict.get(pixel_name, '')
-            settings['object_classifier'] = self._models_dict.get(object_name, '')
+            # Store basenames for logging, full paths in separate keys for processing
+            settings['pixel_classifier'] = os.path.basename(self._models_dict.get(pixel_name, ''))
+            settings['object_classifier'] = os.path.basename(self._models_dict.get(object_name, ''))
+            # Store full paths for actual processing (not logged)
+            settings['_pixel_classifier_path'] = self._models_dict.get(pixel_name, '')
+            settings['_object_classifier_path'] = self._models_dict.get(object_name, '')
         
         # Get analysis options
         if self.watershed_checkbox:
             settings['apply_watershed'] = self.watershed_checkbox.isSelected()
         if self.exclude_edges_checkbox:
             settings['exclude_edges'] = self.exclude_edges_checkbox.isSelected()
+        if self.min_circularity_spinner:
+            settings['min_circularity'] = float(self.min_circularity_spinner.getValue())
         
         return settings
     
@@ -87,30 +99,27 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
         """Return custom columns for this workflow."""
         return ['cell_count', 'total_cell_area']
     
-    def get_log_metadata(self, settings):
-        """Return model names and settings for processing log."""
-        return {
-            'pixel_classifier': os.path.basename(settings.get('pixel_classifier', '')),
-            'object_classifier': os.path.basename(settings.get('object_classifier', '')),
-            'apply_watershed': settings.get('apply_watershed', True),
-            'exclude_edges': settings.get('exclude_edges', True)
-        }
-    
     def process_roi(self, cropped_imp, temp_path, prob_map_path, settings):
         """
         Run the full Ilastik workflow with resume capability.
         """
-        # Store settings for use in analyze_results
-        self._current_settings = settings
-        
         pixel_imp = None
+        show_images = settings.get('show_images', False)
         try:
-            pixel_classifier = settings.get('pixel_classifier', '')
-            object_classifier = settings.get('object_classifier', '')
-            show_images = settings.get('show_images', False)
+            # Use full paths for Ilastik (basenames are stored separately for logging)
+            pixel_classifier = settings.get('_pixel_classifier_path', '')
+            object_classifier = settings.get('_object_classifier_path', '')
+            force_recalculate = settings.get('force_recalculate', False)
     
             pixel_prob_path = prob_map_path + "_probabilities.tif"
             object_prob_path = prob_map_path + "_objects.tif"
+
+            # If force recalculate is enabled, delete existing probability files
+            if force_recalculate:
+                if os.path.exists(pixel_prob_path):
+                    os.remove(pixel_prob_path)
+                if os.path.exists(object_prob_path):
+                    os.remove(object_prob_path)
 
             # Case 1: Final object classification file exists - skip processing
             if os.path.exists(object_prob_path):
@@ -125,14 +134,14 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
                 if not show_images:
                     pixel_imp.hide()
 
-                object_macro_cmd = 'run("Run Object Classification Prediction", "projectfilename=[{}] inputimage=[{}] inputproborsegimage=[{}] secondinputtype=Probabilities");'.format(
+                object_macro_cmd = 'run("Run Object Classification Prediction", "projectfilename=[{}] inputimage=[{}] inputproborsegimage=[{}] secondinputtype=Probabilities objectexportsource=[Object Predictions]");'.format(
                     object_classifier, temp_path, pixel_prob_path)
                 IJ.runMacro(object_macro_cmd)
                 object_imp = IJ.getImage()
-                
+
                 if not object_imp or (pixel_imp and object_imp.getID() == pixel_imp.getID()):
                     raise Exception("Object classification did not produce a new result image.")
-                
+
                 IJ.saveAs(object_imp, "Tiff", object_prob_path)
                 if not show_images:
                     object_imp.hide()
@@ -160,7 +169,7 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
                 System.gc()
 
                 # Object Classification
-                object_macro_cmd = 'run("Run Object Classification Prediction", "projectfilename=[{}] inputimage=[{}] inputproborsegimage=[{}] secondinputtype=Probabilities");'.format(
+                object_macro_cmd = 'run("Run Object Classification Prediction", "projectfilename=[{}] inputimage=[{}] inputproborsegimage=[{}] secondinputtype=Probabilities objectexportsource=[Object Predictions]");'.format(
                     object_classifier, temp_path, pixel_prob_path)
                 IJ.runMacro(object_macro_cmd)
                 object_imp = IJ.getImage()
@@ -169,8 +178,8 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
                     raise Exception("Object classification did not produce a new result image.")
                 
                 IJ.saveAs(object_imp, "Tiff", object_prob_path)
-                if show_images:
-                    object_imp.show()
+                if not show_images:
+                    object_imp.hide()
 
                 IJ.run("Collect Garbage", "")
                 System.gc()
@@ -180,11 +189,13 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
             IJ.log("Ilastik processing failed: " + str(e))
             raise e
         finally:
-            if pixel_imp:
+            # Keep the intermediate pixel-probability image open when the user
+            # asked to see images during processing.
+            if pixel_imp and not show_images:
                 pixel_imp.changes = False
                 pixel_imp.close()
 
-    def analyze_results(self, result_imp, roi, offset_x, offset_y):
+    def analyze_results(self, result_imp, roi, offset_x, offset_y, settings):
         """
         Analyze Ilastik output: threshold, watershed, particle analysis.
         """
@@ -208,24 +219,27 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
         mask_imp.close()
 
         # Threshold and convert to binary
-        IJ.setThreshold(result_imp, 1, 65535)
+        # Ilastik labels: 0=background, 1=cFos, 2=artifacts
+        # Select only label 1 (cFos cells)
+        IJ.setThreshold(result_imp, 1, 1)
         IJ.run(result_imp, "Convert to Mask", "")
 
         # Watershed to separate touching cells (configurable)
-        apply_watershed = getattr(self, '_current_settings', {}).get('apply_watershed', True)
+        apply_watershed = settings.get('apply_watershed', True)
         if apply_watershed:
             IJ.run(result_imp, "Watershed", "")
         
         rm = RoiManager(True)
         rt = ResultsTable()
 
-        # Particle analysis (exclude edges is configurable)
-        exclude_edges = getattr(self, '_current_settings', {}).get('exclude_edges', True)
+        # Particle analysis (exclude edges and circularity are configurable)
+        exclude_edges = settings.get('exclude_edges', True)
+        min_circularity = settings.get('min_circularity', 0.0)
         options = ParticleAnalyzer.SHOW_OUTLINES
         if exclude_edges:
             options |= ParticleAnalyzer.EXCLUDE_EDGE_PARTICLES
         measurements = Measurements.AREA
-        pa = ParticleAnalyzer(options, measurements, rt, 20, float('inf'), 0.0, 1.0)
+        pa = ParticleAnalyzer(options, measurements, rt, 20, float('inf'), min_circularity, 1.0)
         pa.setRoiManager(rm)
         pa.analyze(result_imp)
 
@@ -243,9 +257,10 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
         particle_outlines_relative = rm.getRoisAsArray()
         rm.reset()
         rm.close()
-        
-        result_imp.changes = False
-        result_imp.close()
+
+        if not settings.get('show_images', False):
+            result_imp.changes = False
+            result_imp.close()
 
         if particle_outlines_relative is None:
             particle_outlines_relative = []
