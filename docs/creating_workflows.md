@@ -42,14 +42,14 @@ def process_roi(self, cropped_imp, temp_path, prob_map_path, settings):
     return result
 ```
 
-### `analyze_results(result_imp, roi, offset_x, offset_y) → dict`
+### `analyze_results(result_imp, roi, offset_x, offset_y, settings) → dict`
 
 Extract measurements from the result image. Return a dict with keys matching `get_result_columns()`.
 
-- Include `'outlines'` (list of ROIs) if you want cell selections saved for visualization
+- Include `'outlines'` (list of ROIs) if you want cell selections saved for visualization — they are written to the current run's `Cell_Selections/` folder
 
 ```python
-def analyze_results(self, result_imp, roi, offset_x, offset_y):
+def analyze_results(self, result_imp, roi, offset_x, offset_y, settings):
     rm = RoiManager(True)
     rt = ResultsTable()
     pa = ParticleAnalyzer(ParticleAnalyzer.SHOW_OUTLINES, Measurements.AREA, rt, 20, float('inf'))
@@ -91,9 +91,7 @@ Extract values from your panel into a settings dictionary.
 
 Custom CSV columns beyond `filename`, `roi_name`, `roi_area`, `bregma_value`.
 
-### `get_log_metadata(settings) → dict`
-
-Custom metadata for `processing_log.json` (e.g., model names).
+> **Note**: There is no separate logging hook. Everything `gather_settings()` returns is recorded in the run's `run_metadata.json` automatically (JSON-serializable values only), so settings like model names show up in the Results Viewer without extra work.
 
 ---
 

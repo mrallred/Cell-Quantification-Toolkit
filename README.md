@@ -45,20 +45,28 @@ The best way to install the Cell Quantification Toolkit is from the Fiji update 
 2. **Import Images** — Add images to the `Images/` folder
 3. **Define ROIs** — Use the ROI Editor to draw analysis regions
 4. **Run Quantification** — Select images, choose a workflow, and process
-5. **View Results** — Results saved to `Results_DB.csv`
+5. **View Results** — Each run writes its own folder under `Runs/`, containing the results CSV, cell outlines, and the settings used
 
 ## Project Structure
+
+Each quantification run is self-contained: its results, cell outlines, and settings live together in a timestamped folder under `Runs/`. Re-running an analysis never overwrites a previous one, so you can compare runs side by side.
 
 ```
 MyProject/
 ├── Images/                 # Source images
 ├── ROI_Files/              # ROI selections (.zip)
-├── Probabilities/          # Workflow intermediate outputs
-├── Final_Cell_Selections/  # Detected cell outlines
-├── project.json            # Project database
-├── Results_DB.csv          # Quantification results
-└── processing_log.json     # Processing metadata
+├── Probabilities/          # Workflow intermediate outputs (shared across runs)
+├── Runs/                   # One folder per quantification run
+│   └── 20260728_143022_871000/
+│       ├── Cell_Selections/    # Detected cell outlines (.zip)
+│       ├── 20260728_results.csv
+│       └── run_metadata.json   # Workflow, date, and settings for this run
+├── temp/                   # Temporary processing files (auto-cleaned)
+└── project.json            # Project database (images, ROIs, templates)
 ```
+
+> [!NOTE]
+> Projects created by earlier versions (with `Final_Cell_Selections/`, `Results_DB.csv`, and `processing_log.json` at the project root) are detected on open. The toolkit offers to migrate them to the run-based layout, which removes those old result files — your images and ROIs are preserved.
 
 ## Creating Custom Workflows
 

@@ -592,9 +592,8 @@ class QuantificationWorker(SwingWorker):
         Each run is self-contained with its own metadata file.
         """
         try:
-            date_prefix = datetime.datetime.now().strftime('%Y%m%d')
-            metadata_path = os.path.join(self.run_folder, '{}_run_metadata.json'.format(date_prefix))
-            
+            metadata_path = os.path.join(self.run_folder, 'run_metadata.json')
+
             with open(metadata_path, 'w') as f:
                 json.dump(self._build_metadata(), f, indent=2)
             

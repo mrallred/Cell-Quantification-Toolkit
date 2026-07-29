@@ -103,22 +103,29 @@ graph TD
 ```
 MyProject/
 ├── Images/                 # Source images
-├── ROI_Files/              # ROI selection files (.zip)
-├── Final_Cell_Selections/  # Detected cell outlines (.zip)
-├── Probabilities/          # Workflow intermediate outputs
+├── ROI_Files/              # ROI selection files ({ImageName}_ROIs.zip)
+├── Probabilities/          # Workflow intermediate outputs (shared across runs)
 │   └── {ImageName}_{ROIName}_{index}_probabilities.tif
 │   └── {ImageName}_{ROIName}_{index}_objects.tif
+├── Runs/                   # One self-contained folder per quantification run
+│   └── {run_id}/           # run_id = YYYYMMDD_HHMMSS_ffffff
+│       ├── Cell_Selections/    # Detected cell outlines ({ImageName}_Outlines.zip)
+│       ├── {YYYYMMDD}_results.csv  # Aggregated results for this run
+│       └── run_metadata.json       # Workflow, date, and settings for this run
 ├── temp/                   # Temporary processing files (auto-cleaned)
-├── project.json            # Unified project database (images, ROIs, templates)
-├── Results_DB.csv          # Quantification results (user-accessible)
-└── processing_log.json     # Processing run metadata
+└── project.json            # Unified project database (images, ROIs, templates)
 ```
+
+Only `Images/`, `ROI_Files/`, `Probabilities/`, and `temp/` are created when a project is opened. `Runs/` is created on demand by the first quantification run.
 
 **Key methods**:
 - `_verify_and_create_dirs()`: Ensures project directories exist
 - `_load_project_json()` / `_save_project_json()`: Load/save unified JSON database
+- `_migrate_to_run_based()`: Detects the pre-`Runs/` layout and, with user confirmation, removes the old root-level result files
 - `_migrate_from_csv()`: Auto-migrates legacy CSV projects to JSON
 - `remove_images()`: Delete images and associated files
+
+`ProjectImage.has_outlines()` reports whether *any* run contains outlines for an image; the GUI uses it to enable the Results Viewer button.
 
 ---
 
@@ -150,14 +157,16 @@ MyProject/
 2. Dialog dynamically loads available workflows from `workflows/` folder
 3. User selects workflow and configures settings
 4. `QuantificationWorker.doInBackground()`:
+   - Generates a `run_id` (`YYYYMMDD_HHMMSS_ffffff`) and creates `Runs/{run_id}/Cell_Selections/`
    - Loops through each image → each ROI
    - Crops ROI region and saves as temp file
    - Delegates to workflow's `process_roi()` method
    - Calls workflow's `analyze_results()` method
-   - Aggregates results by ROI name
+   - Saves each image's cell outlines into this run's `Cell_Selections/`
 5. `QuantificationWorker.done()`:
-   - Writes aggregated results to `Results_DB.csv`
-   - Saves processing metadata to `processing_log.json`
+   - Aggregates results by `(filename, roi_name)`
+   - Writes `Runs/{run_id}/{YYYYMMDD}_results.csv`
+   - Writes `Runs/{run_id}/run_metadata.json`
 
 ---
 
@@ -166,13 +175,16 @@ MyProject/
 | Class | Purpose |
 |-------|---------|
 | `ResultsViewer` | Dialog for viewing an image with overlays |
+| `RunChangeListener` | Reloads overlays and metadata when a different run is selected |
 | `ImageWindowListener` | Syncs dialog lifecycle with image window |
 
 **Features**:
+- Scans `Runs/` for every run containing outlines for this image, most recent first
+- Run selector dropdown (shown only when the image appears in more than one run)
 - Display image with toggleable overlays:
-  - Analysis ROIs (user-drawn regions)
-  - Cell outlines (detected objects)
-- Show processing metadata (workflow used, date, settings)
+  - Analysis ROIs (user-drawn regions, per-image and shared across runs)
+  - Cell outlines (detected objects, loaded from the selected run)
+- Show the selected run's processing metadata (workflow, date, and each setting) read from its `run_metadata.json`
 
 ---
 
@@ -190,12 +202,13 @@ class BaseWorkflow:
     def get_settings_panel(models_dict) -> JPanel    # Custom UI
     def gather_settings(panel) -> dict               # Extract settings
     def get_result_columns() -> list[str]            # Custom CSV columns
-    def get_log_metadata(settings) -> dict           # Custom log metadata
     
     # REQUIRED:
     def process_roi(cropped_imp, temp_path, prob_map_path, settings) -> ImagePlus
-    def analyze_results(result_imp, roi, offset_x, offset_y) -> dict
+    def analyze_results(result_imp, roi, offset_x, offset_y, settings) -> dict
 ```
+
+Whatever `gather_settings()` returns is merged into the run settings, and every JSON-serializable entry is recorded in that run's `run_metadata.json` — workflows need no separate logging hook.
 
 ### Example Implementation — [`brightfield_cfos.py`](../workflows/brightfield_cfos.py)
 
@@ -225,11 +238,14 @@ flowchart TB
         E[Workflow Plugin<br/>analyze_results]
     end
     
-    subgraph Output
-        F[Probability Maps]
-        G[Cell Outlines]
-        H[Results_DB.csv]
-        I[processing_log.json]
+    subgraph "Output — Runs/{run_id}/"
+        G[Cell_Selections/*_Outlines.zip]
+        H["{YYYYMMDD}_results.csv"]
+        I[run_metadata.json]
+    end
+    
+    subgraph "Output — shared"
+        F[Probabilities/]
     end
     
     A --> C
@@ -249,17 +265,21 @@ flowchart TB
 ### 1. Folder-Based Projects
 Projects are simple directories with a defined structure. Data is stored in human-readable formats—CSV files for tabular data, JSON for structured metadata, and standard image formats—for maximum interoperability and easy external analysis.
 
-### 2. Unified JSON Database
-- **`project.json`**: Stores all project state (images, statuses, ROI templates, cached ROI counts)
-- **`Results_DB.csv`**: Quantification results (kept as CSV for user analysis in Excel/R/Python)
-- **`processing_log.json`**: Processing run metadata, keyed by unique `run_id`. Each entry contains:
-  - `processed_date`: ISO timestamp of when the run occurred
-  - `workflow_name`: Which workflow was used
-  - `workflow_metadata`: Workflow-specific info (e.g., classifier model names)
-  - `images_processed`: List of image filenames in this run
-  - `total_results`: Count of results generated
+### 2. Run-Based Result Storage
+Project state and results are deliberately separated:
 
-Legacy CSV projects are auto-migrated to JSON on first open.
+- **`project.json`** (schema `PROJECT_VERSION = "2.0"`): All project state — images, statuses, ROI templates, cached ROI counts.
+- **`Runs/{run_id}/`**: Everything produced by one quantification run, kept together and never overwritten by later runs:
+  - `{YYYYMMDD}_results.csv` — aggregated results (CSV so users can open it in Excel/R/Python)
+  - `Cell_Selections/{ImageName}_Outlines.zip` — detected cell outlines
+  - `run_metadata.json` — the run's provenance:
+    - `processed_date`: ISO timestamp of when the run occurred
+    - `workflow_name`: Which workflow was used
+    - `workflow_settings`: The workflow's settings for this run (JSON-serializable values only; internal keys, the workflow object, and display-only options are filtered out)
+    - `images_processed`: List of image filenames in this run
+    - `total_results`: Count of results generated
+
+Legacy CSV databases are auto-migrated to `project.json` on first open. Projects using the older root-level result layout (`Final_Cell_Selections/`, `Results_DB.csv`, `processing_log.json`) prompt for migration to the run-based layout; images and ROIs are preserved, old result files are removed.
 
 ### 3. Plugin Architecture for Workflows
 Workflows are discovered dynamically at runtime by scanning the `workflows/` folder. This allows adding new analysis methods without modifying core code.
@@ -271,4 +291,4 @@ ROI geometry and metadata (name, bregma) are stored directly in Fiji's `.zip` RO
 Intermediate files (probability maps, object classifications) are preserved in `Probabilities/`, allowing processing to resume after interruption. Files are named with image, ROI, and index to prevent collisions.
 
 ### 6. Metadata Traceability
-Each processing run is logged with a unique `run_id` (timestamp-based) that links results in `Results_DB.csv` to full settings in `processing_log.json`, enabling complete reproducibility.
+The run folder name *is* the `run_id` (`YYYYMMDD_HHMMSS_ffffff`, microseconds included to prevent collisions between rapid successive runs). Because a run's results, outlines, and `run_metadata.json` all live inside that folder, results need no cross-reference key to locate the settings that produced them — the Results Viewer simply reads the metadata file sitting next to the outlines it is displaying.

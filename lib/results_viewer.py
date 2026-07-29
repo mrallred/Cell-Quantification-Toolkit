@@ -1,4 +1,5 @@
 import os
+import glob
 import json
 import csv
 
@@ -152,13 +153,19 @@ class ResultsViewer(WindowAdapter):
             return None
         
         try:
-            metadata_path = os.path.join(
-                self.project.paths['runs'], run_id, 'run_metadata.json'
-            )
-            
+            run_path = os.path.join(self.project.paths['runs'], run_id)
+            metadata_path = os.path.join(run_path, 'run_metadata.json')
+
             if not os.path.exists(metadata_path):
-                return None
-            
+                # Older runs saved this file with a date prefix
+                # (e.g. 20260728_run_metadata.json).
+                legacy_matches = sorted(
+                    glob.glob(os.path.join(run_path, '*_run_metadata.json'))
+                )
+                if not legacy_matches:
+                    return None
+                metadata_path = legacy_matches[-1]
+
             with open(metadata_path, 'r') as f:
                 return json.load(f)
             
