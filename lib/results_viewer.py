@@ -10,8 +10,22 @@ from ij.plugin.frame import RoiManager
 from javax.swing import JDialog, JPanel, JCheckBox, JLabel, JComboBox, BorderFactory
 from javax.swing.border import EmptyBorder
 
-from java.awt import GridLayout, BorderLayout
+from java.awt import GridLayout, BorderLayout, Color
 from java.awt.event import WindowAdapter, ItemListener
+
+# Display config for multi-class cell outlines, keyed by the 'cell_class'
+# property that workflows write onto each outline ROI. Order here controls the
+# order the toggles appear in. Outlines with no 'cell_class' property (legacy
+# runs and single-class workflows) fall back to a single default toggle.
+OUTLINE_CLASS_CONFIG = [
+    ("cfos", "cFos", Color.RED),
+    ("ctb", "CtB", Color.CYAN),
+    ("cfos_ctb", "cFos+CtB", Color.YELLOW),
+]
+DEFAULT_OUTLINE_KEY = "_default"
+DEFAULT_OUTLINE_LABEL = "Cell Outlines"
+DEFAULT_OUTLINE_COLOR = Color.MAGENTA
+
 
 class ResultsViewer(WindowAdapter):
     """
@@ -36,8 +50,10 @@ class ResultsViewer(WindowAdapter):
         # Load analysis ROIs (these are per-image, not per-run)
         self.analysis_rois = self._load_rois_from_zip(self.image_obj.roi_path)
         
-        # Load cell outlines from selected run
+        # Load cell outlines from selected run and group them by class
         self.outline_rois = self._load_outlines_for_run(self.selected_run) if self.selected_run else []
+        self.outline_buckets = self._bucket_outlines(self.outline_rois)
+        self.outline_checkboxes = {}
 
         # Build the control dialog
         self.dialog = JDialog(self.image_window, "Results Viewer: " + self.image_obj.filename, False)
@@ -59,25 +75,16 @@ class ResultsViewer(WindowAdapter):
             run_panel.add(self.run_combo)
             main_panel.add(run_panel, BorderLayout.NORTH)
         
-        # Center section: Overlay options
-        overlay_panel = JPanel(GridLayout(2, 1, 2, 2))
-        overlay_panel.setBorder(BorderFactory.createTitledBorder("Overlay Options"))
-        
+        # Center section: Overlay options (analysis ROIs + one toggle per cell class)
+        self.overlay_panel = JPanel(GridLayout(0, 1, 2, 2))
+        self.overlay_panel.setBorder(BorderFactory.createTitledBorder("Overlay Options"))
+
         self.analysis_checkbox = JCheckBox("Show Analysis ROIs", True)
-        self.outlines_checkbox = JCheckBox("Show Cell Outlines", True)
-
-        # Enable checkboxes only if their corresponding ROIs were found
         self.analysis_checkbox.setEnabled(bool(self.analysis_rois))
-        self.outlines_checkbox.setEnabled(bool(self.outline_rois))
+        self.analysis_checkbox.addActionListener(self._update_overlay)
 
-        # Add a single action listener to both
-        action_listener = self._update_overlay
-        self.analysis_checkbox.addActionListener(action_listener)
-        self.outlines_checkbox.addActionListener(action_listener)
-
-        overlay_panel.add(self.analysis_checkbox)
-        overlay_panel.add(self.outlines_checkbox)
-        main_panel.add(overlay_panel, BorderLayout.CENTER)
+        self._populate_overlay_panel()
+        main_panel.add(self.overlay_panel, BorderLayout.CENTER)
         
         # Bottom section: Processing metadata
         self.info_panel = JPanel(GridLayout(0, 1, 2, 2))
@@ -129,11 +136,69 @@ class ResultsViewer(WindowAdapter):
         )
         return self._load_rois_from_zip(outline_path)
     
+    def _bucket_outlines(self, outlines):
+        """Group outlines by their 'cell_class' property.
+
+        Outlines with no 'cell_class' (legacy runs and single-class workflows)
+        are collected under DEFAULT_OUTLINE_KEY so they still render.
+        """
+        buckets = {}
+        for roi in outlines:
+            cell_class = None
+            try:
+                cell_class = roi.getProperty("cell_class")
+            except Exception:
+                cell_class = None
+            key = cell_class if cell_class else DEFAULT_OUTLINE_KEY
+            buckets.setdefault(key, []).append(roi)
+        return buckets
+
+    def _ordered_outline_groups(self):
+        """Return present outline groups as (key, label, color, rois).
+
+        Configured classes come first in OUTLINE_CLASS_CONFIG order; any
+        remaining keys (default bucket or unknown classes) follow.
+        """
+        groups = []
+        seen = set()
+        for key, label, color in OUTLINE_CLASS_CONFIG:
+            rois = self.outline_buckets.get(key)
+            if rois:
+                groups.append((key, label, color, rois))
+                seen.add(key)
+        for key, rois in self.outline_buckets.items():
+            if key in seen or not rois:
+                continue
+            if key == DEFAULT_OUTLINE_KEY:
+                groups.append((key, DEFAULT_OUTLINE_LABEL, DEFAULT_OUTLINE_COLOR, rois))
+            else:
+                groups.append((key, key, DEFAULT_OUTLINE_COLOR, rois))
+        return groups
+
+    def _populate_overlay_panel(self):
+        """(Re)build the overlay checkboxes: analysis ROIs + one per cell class."""
+        self.overlay_panel.removeAll()
+        self.outline_checkboxes = {}
+
+        self.overlay_panel.add(self.analysis_checkbox)
+
+        for key, label, color, rois in self._ordered_outline_groups():
+            checkbox = JCheckBox("Show " + label, True)
+            checkbox.setForeground(color)
+            checkbox.setEnabled(bool(rois))
+            checkbox.addActionListener(self._update_overlay)
+            self.outline_checkboxes[key] = checkbox
+            self.overlay_panel.add(checkbox)
+
+        self.overlay_panel.revalidate()
+        self.overlay_panel.repaint()
+
     def _on_run_change(self, run_id):
         """Handle run selection change."""
         self.selected_run = run_id
         self.outline_rois = self._load_outlines_for_run(run_id)
-        self.outlines_checkbox.setEnabled(bool(self.outline_rois))
+        self.outline_buckets = self._bucket_outlines(self.outline_rois)
+        self._populate_overlay_panel()
         self._update_info_panel()
         self._update_overlay()
 
@@ -215,11 +280,16 @@ class ResultsViewer(WindowAdapter):
         if self.analysis_checkbox.isSelected() and self.analysis_rois:
             for roi in self.analysis_rois:
                 overlay.add(roi)
-        
-        if self.outlines_checkbox.isSelected() and self.outline_rois:
-            for roi in self.outline_rois:
-                overlay.add(roi)
-        
+
+        # Add each enabled cell-class group, enforcing its color so overlays are
+        # consistent even when a saved ROI lacks a stored stroke color.
+        for key, label, color, rois in self._ordered_outline_groups():
+            checkbox = self.outline_checkboxes.get(key)
+            if checkbox is not None and checkbox.isSelected():
+                for roi in rois:
+                    roi.setStrokeColor(color)
+                    overlay.add(roi)
+
         self.imp.setOverlay(overlay)
         self.imp.updateAndDraw()
 

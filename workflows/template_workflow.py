@@ -37,7 +37,8 @@ class TemplateWorkflow(BaseWorkflow):
     1. Copy this file to a new file in the workflows directory (e.g., my_workflow.py)
     2. Rename the class
     3. Set display_name and description
-    4. Customize get_settings_panel() for your needs
+    4. Set hidden = False (or remove the line) so your workflow appears in the picker
+    5. Customize get_settings_panel() for your needs
     5. Implement process_roi() with your detection logic
     6. Implement analyze_results() to extract measurements
     """
@@ -47,6 +48,7 @@ class TemplateWorkflow(BaseWorkflow):
     # ========================================================================
     display_name = "Template Workflow"
     description = "Skeleton template demonstrating the workflow plugin interface"
+    hidden = True  # keep out of the workflow picker; it's a skeleton to copy
     
     def __init__(self):
         """Initialize UI component references."""

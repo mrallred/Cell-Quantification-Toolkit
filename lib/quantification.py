@@ -72,6 +72,10 @@ def _discover_workflows():
                 for name, obj in namespace.items():
                     if isinstance(obj, type) and issubclass(obj, BaseWorkflow) and obj is not BaseWorkflow:
                         instance = obj()
+                        # Skip skeleton/example workflows flagged as hidden
+                        # (e.g. the template) so they don't clutter the picker.
+                        if getattr(instance, 'hidden', False):
+                            continue
                         workflows[instance.display_name] = instance
             except Exception as e:
                 errors.append("{}: {}".format(filename, str(e)))

@@ -1,6 +1,7 @@
 """
-Brightfield cFos workflow - Cell detection using Ilastik pixel + object classification.
-Migrated from the original quantification.py hardcoded workflow.
+Single color brightfield DAB-stained cFos workflow - Cell detection using Ilastik pixel + object classification.
+
+Uses `BrightField_cFos_Pixel.ilp` and `BrightField_cFos_Object.ilp` Ilastik models.
 """
 import os
 
@@ -35,7 +36,8 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
         self.watershed_checkbox = None
         self.exclude_edges_checkbox = None
         self.min_circularity_spinner = None
-    
+        self.min_size_spinner = None
+
     def get_settings_panel(self, models_dict):
         """Create panel with pixel and object classifier dropdowns."""
         panel = JPanel(GridLayout(0, 2, 10, 10))
@@ -66,7 +68,14 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
         panel.add(JLabel("Min Circularity (0.0-1.0):"))
         self.min_circularity_spinner = JSpinner(SpinnerNumberModel(0.0, 0.0, 1.0, 0.1))
         panel.add(self.min_circularity_spinner)
-        
+
+        # Minimum particle area (pixels). Should match (or be below) the object
+        # classifier's segmentation MinSize so cells ilastik keeps are not
+        # dropped here. Default 10 matches the ThresholdTwoLevels MinSize.
+        panel.add(JLabel("Min Cell Area (px):"))
+        self.min_size_spinner = JSpinner(SpinnerNumberModel(10, 1, 1000000, 1))
+        panel.add(self.min_size_spinner)
+
         # Store models_dict reference for gather_settings
         self._models_dict = models_dict
         
@@ -92,7 +101,9 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
             settings['exclude_edges'] = self.exclude_edges_checkbox.isSelected()
         if self.min_circularity_spinner:
             settings['min_circularity'] = float(self.min_circularity_spinner.getValue())
-        
+        if self.min_size_spinner:
+            settings['min_cell_size'] = float(self.min_size_spinner.getValue())
+
         return settings
     
     def get_result_columns(self):
@@ -235,11 +246,12 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
         # Particle analysis (exclude edges and circularity are configurable)
         exclude_edges = settings.get('exclude_edges', True)
         min_circularity = settings.get('min_circularity', 0.0)
+        min_cell_size = settings.get('min_cell_size', 10)
         options = ParticleAnalyzer.SHOW_OUTLINES
         if exclude_edges:
             options |= ParticleAnalyzer.EXCLUDE_EDGE_PARTICLES
         measurements = Measurements.AREA
-        pa = ParticleAnalyzer(options, measurements, rt, 20, float('inf'), min_circularity, 1.0)
+        pa = ParticleAnalyzer(options, measurements, rt, min_cell_size, float('inf'), min_circularity, 1.0)
         pa.setRoiManager(rm)
         pa.analyze(result_imp)
 

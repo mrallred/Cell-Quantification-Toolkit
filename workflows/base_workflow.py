@@ -22,7 +22,11 @@ class BaseWorkflow(object):
     # Metadata shown in dialog
     display_name = "Unnamed Workflow"
     description = ""
-    
+
+    # Set True on skeleton/example workflows (e.g. the template) so the loader
+    # discovers them but hides them from the workflow selection dropdown.
+    hidden = False
+
     def get_settings_panel(self, models_dict):
         """
         Return a JPanel with workflow-specific settings UI, or None for no custom settings.
