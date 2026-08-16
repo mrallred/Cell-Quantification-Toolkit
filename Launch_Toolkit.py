@@ -42,7 +42,7 @@ if script_dir not in sys.path:
 
 if DEV_MODE:
     dev_reload_toolkit_modules(script_dir, package_name="lib")
-    dev_reload_toolkit_modules(script_dir, package_name="workflows")
+    dev_reload_toolkit_modules(script_dir, package_name="steps")
 
 from lib.main_gui import ProjectManagerGUI
 

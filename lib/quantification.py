@@ -1,10 +1,8 @@
 import os
-import sys
 import csv
 import json
 import datetime
 import traceback
-import imp
 import re
 
 from ij import IJ, WindowManager
@@ -19,73 +17,6 @@ from javax.swing import (JDialog, JPanel, JLabel, JComboBox, JCheckBox,
 from javax.swing.border import EmptyBorder
 
 from java.awt import BorderLayout, FlowLayout, GridLayout, CardLayout
-
-
-def _discover_workflows():
-    """
-    Scan the workflows folder and import all BaseWorkflow subclasses.
-    Returns a tuple of (dict of {display_name: workflow_instance}, list of error messages)
-    """
-    workflows = {}
-    errors = []
-    try:
-        plugins_dir = IJ.getDirectory("plugins")
-        toolkit_dir = os.path.join(plugins_dir, "Cell_Quantification_Toolkit")
-        workflows_dir = os.path.join(toolkit_dir, "workflows")
-        
-        if not os.path.isdir(workflows_dir):
-            IJ.log("Workflows directory not found: " + workflows_dir)
-            return workflows, errors
-        
-        # Add workflows dir to path if not present
-        if workflows_dir not in sys.path:
-            sys.path.insert(0, workflows_dir)
-        
-        # Load BaseWorkflow class
-        base_workflow_path = os.path.join(workflows_dir, 'base_workflow.py')
-        if not os.path.exists(base_workflow_path):
-            IJ.log("base_workflow.py not found")
-            return workflows, errors
-        
-        base_namespace = {}
-        execfile(base_workflow_path, base_namespace)
-        BaseWorkflow = base_namespace['BaseWorkflow']
-        
-        # Find workflow files
-        workflow_files = [f for f in os.listdir(workflows_dir) 
-                         if f.endswith('.py') and not f.startswith('_') and f != 'base_workflow.py']
-        
-        # Load each workflow
-        for filename in workflow_files:
-            try:
-                module_path = os.path.join(workflows_dir, filename)
-                
-                # Execute workflow file with BaseWorkflow in namespace
-                namespace = {'BaseWorkflow': BaseWorkflow}
-                with open(module_path, 'r') as f:
-                    source_code = f.read()
-                
-                compiled = compile(source_code, module_path, 'exec')
-                exec(compiled, namespace)
-                
-                # Find and instantiate workflow classes
-                for name, obj in namespace.items():
-                    if isinstance(obj, type) and issubclass(obj, BaseWorkflow) and obj is not BaseWorkflow:
-                        instance = obj()
-                        # Skip skeleton/example workflows flagged as hidden
-                        # (e.g. the template) so they don't clutter the picker.
-                        if getattr(instance, 'hidden', False):
-                            continue
-                        workflows[instance.display_name] = instance
-            except Exception as e:
-                errors.append("{}: {}".format(filename, str(e)))
-                IJ.log("Error loading workflow '{}': {}".format(filename, e))
-                IJ.log(traceback.format_exc())
-    except Exception as e:
-        IJ.log("Error discovering workflows: " + str(e))
-        IJ.log(traceback.format_exc())
-    
-    return workflows, errors
 
 
 def _sanitize_filename(name):
