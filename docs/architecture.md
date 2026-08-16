@@ -1,6 +1,15 @@
 # Cell Quantification Toolkit — Architecture Overview
 
-This document covers the high-level architecture and organizational logic of the Cell Quantification Toolkit, a Fiji plugin for managing image analysis projects and running automated cell quantification workflows.
+The Cell Quantification Toolkit is a Fiji plugin for project-based, ROI-specific,
+automated cell detection and quantification. Analysis is expressed as a
+**pipeline of three stages** — segmentation → classification → post-processing —
+where each stage is filled by a swappable **provider**. A **workflow** is a saved
+JSON definition that picks a provider (and its settings) for each stage plus a
+class map; workflows are global and any project can use any of them.
+
+The expensive stages (segmentation + classification) run once and cache their
+output; post-processing is tuned interactively in the Results Viewer and only
+written to disk on export.
 
 ---
 
@@ -8,19 +17,27 @@ This document covers the high-level architecture and organizational logic of the
 
 ```
 Cell_Quantification_Toolkit/
-├── Launch_Toolkit.py       # Entry point script
-├── lib/                    # Core application modules
-│   ├── main_gui.py         # Main GUI and application controller
-│   ├── project_model.py    # Data model for projects and images
-│   ├── roi_editor.py       # ROI editing interface
-│   ├── quantification.py   # Batch processing orchestration
-│   └── results_viewer.py   # Results visualization
-├── workflows/              # Pluggable workflow system
-│   ├── base_workflow.py    # Abstract base class for workflows
-│   ├── brightfield_cfos.py # Example: Ilastik-based cell detection
-│   └── template_workflow.py# Reference template for new workflows
-├── models/                 # Ilastik classifier models (.ilp files)
-└── docs/                   # Documentation
+├── Launch_Toolkit.py        # Entry point (adds plugin root to sys.path, hot-reload in DEV_MODE)
+├── lib/                     # Core application modules
+│   ├── main_gui.py          # Project-manager window + Current Workflow panel + Project Summary
+│   ├── project_model.py     # Project / ProjectImage data model
+│   ├── roi_editor.py        # ROI editing interface
+│   ├── quantification.py    # Run dialog + background worker (segmentation + classification only)
+│   ├── results_viewer.py    # Interactive post-processing, preview + export
+│   ├── results_export.py    # Recompute from cached labels; write outlines / CSV / metadata
+│   ├── postprocess.py       # run_post(): the shared post-processing step
+│   ├── workflow_config.py   # WorkflowDefinition, WorkflowStore, .ilp introspection, build_workflow_instance
+│   ├── workflow_editor.py   # Stage-based workflow editor dialog
+│   ├── step_registry.py     # Discovers step providers from steps/
+│   └── pipeline_runner.py   # Runs segmentation → classification → post per ROI
+├── steps/                   # Pluggable pipeline providers
+│   ├── base_step.py         # StepProvider base class
+│   ├── ilastik_pixel.py     # Segmentation provider (ilastik pixel classification)
+│   └── ilastik_object.py    # Classification provider (ilastik object classification)
+├── workflow_defs/           # Saved workflow definitions (*.json), global
+├── models/                  # ilastik classifier models (.ilp)
+├── workflows/               # Legacy BaseWorkflow plugins (retained, hidden; superseded by steps/)
+└── docs/                    # Documentation
 ```
 
 ---
@@ -29,266 +46,173 @@ Cell_Quantification_Toolkit/
 
 ```mermaid
 graph TD
-    subgraph Entry
-        A[Launch_Toolkit.py]
+    A[Launch_Toolkit.py] --> B[ProjectManagerGUI<br/>main_gui.py]
+
+    subgraph "Core (lib/)"
+        B --> C[Project / ProjectImage<br/>project_model.py]
+        B --> D[ROIEditor<br/>roi_editor.py]
+        B --> E[WorkflowEditorDialog<br/>workflow_editor.py]
+        B --> F[QuantificationWorker<br/>quantification.py]
+        B --> G[ResultsViewer<br/>results_viewer.py]
+        E --> H[WorkflowStore / WorkflowDefinition<br/>workflow_config.py]
+        F --> I[PipelineRunner<br/>pipeline_runner.py]
+        G --> J[run_post / results_export]
     end
-    
-    subgraph "Core Library (lib/)"
-        B[ProjectManagerGUI<br/>main_gui.py]
-        C[Project / ProjectImage<br/>project_model.py]
-        D[ROIEditor<br/>roi_editor.py]
-        E[QuantificationDialog<br/>QuantificationWorker<br/>quantification.py]
-        F[ResultsViewer<br/>results_viewer.py]
+
+    subgraph "Pipeline providers (steps/)"
+        K[StepProvider<br/>base_step.py]
+        K --> L[ilastik_pixel<br/>segmentation]
+        K --> M[ilastik_object<br/>classification]
     end
-    
-    subgraph "Workflow Plugins (workflows/)"
-        G[BaseWorkflow<br/>base_workflow.py]
-        H[BrightfieldCfosWorkflow]
-        I[Other Workflows...]
-    end
-    
-    A --> B
-    B --> C
-    B --> D
-    B --> E
-    B --> F
-    E --> G
-    G --> H
-    G --> I
+
+    H --> N[workflow_defs/*.json]
+    I --> K
+    R[step_registry.py] --> K
+    H --> R
 ```
 
 ---
 
-## Module Responsibilities
+## The pipeline
 
-### 1. Entry Point — [`Launch_Toolkit.py`](../Launch_Toolkit.py)
+Every analysis is three fixed stages, each filled by a provider:
 
-- **Purpose**: Bootstrap script that initializes the plugin
-- **Key features**:
-  - Development mode (`DEV_MODE = True`) for hot-reloading modules during development
-  - Clears compiled `.class` files and reloads Python modules when in dev mode
-  - Launches the main GUI on the Swing event thread
+| Stage | Output token(s) | Built-in providers |
+|-------|-----------------|--------------------|
+| **Segmentation** | `probability_map` (or `instance_labels`) | `ilastik_pixel` |
+| **Classification** | `class_labels` | `ilastik_object` (consumes `probability_map`) |
+| **Post-processing** | outlines + counts | shared `run_post()` (watershed, edge/size/circularity filters) |
 
----
+Providers declare what they **produce** and **consume** (contract tokens), so the
+editor only offers classification providers compatible with the chosen
+segmentation. New methods (e.g. StarDist segmentation, z-scored-intensity
+classification) are added by dropping a `StepProvider` subclass into `steps/`;
+`step_registry.py` discovers it automatically.
 
-### 2. Main GUI — [`main_gui.py`](../lib/main_gui.py)
-
-| Class | Purpose |
-|-------|---------|
-| `ProjectManagerGUI` | Main application window and controller |
-| `ImageImportWorker` | Background thread for importing images |
-
-**ProjectManagerGUI responsibilities**:
-- File menu: Open/Save project
-- Image table: Display and select project images
-- Image operations: Import, remove, edit ROIs
-- Quantification: Launch batch processing
-- ROI templates: Manage predefined ROI names
-
-**Key patterns**:
-- Uses `SwingWorker` for background operations
-- Maintains `Project` reference as central state
-- Coordinates between sub-components (ROI editor, quantification dialog, results viewer)
+`pipeline_runner.PipelineRunner` executes the two expensive providers per ROI and
+delegates post-processing to `postprocess.run_post()`.
 
 ---
 
-### 3. Data Model — [`project_model.py`](../lib/project_model.py)
+## Workflows are definitions
 
-| Class | Purpose |
-|-------|---------|
-| `Project` | Represents an analysis project (folder-based) |
-| `ProjectImage` | Represents a single image and its metadata |
+A **workflow definition** (`workflow_config.WorkflowDefinition`) is data, not code
+— a schema-v2 JSON file in `workflow_defs/`:
 
-**Project structure (on disk)**:
+```json
+{
+  "schema_version": 2,
+  "name": "Brightfield Costained cFos + CtB",
+  "description": "...",
+  "segmentation":   { "type": "ilastik_pixel",  "params": { "project": "..._pixel.ilp" } },
+  "classification": { "type": "ilastik_object", "params": { "project": "..._object.ilp" } },
+  "classes": [
+    { "label": 1, "key": "cfos",     "display": "cFos",     "color": [255, 0, 0],   "include": true },
+    { "label": 2, "key": "ctb",      "display": "CtB",      "color": [0, 255, 255], "include": true },
+    { "label": 3, "key": "cfos_ctb", "display": "cFos+CtB", "color": [255, 255, 0], "include": true },
+    { "label": 4, "key": "artifact", "display": "Artifact", "color": [128,128,128], "include": false }
+  ],
+  "post": { "apply_watershed": true, "exclude_edges": true, "min_cell_size": 10, "min_circularity": 0.0 }
+}
+```
+
+- `label` is the pixel value in the classification output; `include: true` marks a
+  class as a counted cell (others are ignored).
+- `post` holds the starting post-processing defaults; the real tuning happens in
+  the Results Viewer.
+- Legacy v1 definitions (flat `pixel_classifier` / `object_classifier` fields)
+  still load — their stages are derived automatically and upgraded to v2 on save.
+
+`WorkflowStore` manages the `workflow_defs/` folder (list / load / save / delete).
+Each project remembers its last-used workflow name in `project.json`
+(`selected_workflow`) but can switch to any workflow at any time.
+
+---
+
+## Run → review → export flow
+
+1. **Run Quantification** (`quantification.py`) runs only the expensive stages:
+   per ROI it crops the region, runs segmentation + classification via the
+   `PipelineRunner`, and caches the class-label image to
+   `Probabilities/{image}_{roi}_{index}_objects.tif`. It writes the run's
+   `run_metadata.json` (workflow snapshot + default post params) but **no CSV or
+   outlines**, then opens the Results Viewer. Processing runs in ImageJ batch mode
+   so intermediate windows are not shown.
+2. **Results Viewer** (`results_viewer.py`) auto-previews the detected objects,
+   and lets the user adjust post-processing (watershed, exclude edges, min area,
+   min circularity) with live feedback. The same settings apply to every image in
+   the run.
+3. **Export** (`results_export.py`) recomputes every image in the run from its
+   cached labels with the chosen settings, then writes the outline zips, the
+   aggregated results CSV, and the tuned `post` block back into the run folder.
+
+Because post-processing reads cached labels, re-tuning and re-export never re-run
+ilastik.
+
+---
+
+## On-disk project structure
+
 ```
 MyProject/
 ├── Images/                 # Source images
-├── ROI_Files/              # ROI selection files ({ImageName}_ROIs.zip)
-├── Probabilities/          # Workflow intermediate outputs (shared across runs)
-│   └── {ImageName}_{ROIName}_{index}_probabilities.tif
-│   └── {ImageName}_{ROIName}_{index}_objects.tif
-├── Runs/                   # One self-contained folder per quantification run
-│   └── {run_id}/           # run_id = YYYYMMDD_HHMMSS_ffffff
-│       ├── Cell_Selections/    # Detected cell outlines ({ImageName}_Outlines.zip)
-│       ├── {YYYYMMDD}_results.csv  # Aggregated results for this run
-│       └── run_metadata.json       # Workflow, date, and settings for this run
-├── temp/                   # Temporary processing files (auto-cleaned)
-└── project.json            # Unified project database (images, ROIs, templates)
+├── ROI_Files/              # {ImageName}_ROIs.zip  (geometry + name + bregma)
+├── Probabilities/          # Cached stage outputs, shared across runs
+│   ├── {image}_{roi}_{i}_probabilities.tif
+│   └── {image}_{roi}_{i}_objects.tif     # class-label image (post reads this)
+├── Runs/                   # One self-contained folder per run (run_id = YYYYMMDD_HHMMSS_ffffff)
+│   └── {run_id}/
+│       ├── Cell_Selections/{ImageName}_Outlines.zip   # written on export
+│       ├── {YYYYMMDD}_results.csv                      # written on export
+│       └── run_metadata.json                          # workflow snapshot + post used
+├── temp/                   # Temporary crops (auto-cleaned)
+└── project.json            # Images, ROIs, templates, selected_workflow
 ```
 
-Only `Images/`, `ROI_Files/`, `Probabilities/`, and `temp/` are created when a project is opened. `Runs/` is created on demand by the first quantification run.
-
-**Key methods**:
-- `_verify_and_create_dirs()`: Ensures project directories exist
-- `_load_project_json()` / `_save_project_json()`: Load/save unified JSON database
-- `_migrate_to_run_based()`: Detects the pre-`Runs/` layout and, with user confirmation, removes the old root-level result files
-- `_migrate_from_csv()`: Auto-migrates legacy CSV projects to JSON
-- `remove_images()`: Delete images and associated files
-
-`ProjectImage.has_outlines()` reports whether *any* run contains outlines for an image; the GUI uses it to enable the Results Viewer button.
+Workflow definitions live globally in the plugin's `workflow_defs/`, not per
+project.
 
 ---
 
-### 4. ROI Editor — [`roi_editor.py`](../lib/roi_editor.py)
+## Module responsibilities (brief)
 
-| Class | Purpose |
-|-------|---------|
-| `ROIEditor` | Modal dialog for drawing/editing regions of interest |
-
-**Features**:
-- Create, update, delete ROIs
-- Hierarchical display with templates as headers
-- Store metadata (name, bregma value) in ROI properties
-- Commit-on-action editing model
-- Save ROIs as Fiji-compatible `.zip` files
-
----
-
-### 5. Quantification Engine — [`quantification.py`](../lib/quantification.py)
-
-| Class | Purpose |
-|-------|---------|
-| `QuantificationDialog` | Settings dialog with workflow selection |
-| `ProgressDialog` | Progress bar during batch processing |
-| `QuantificationWorker` | Background thread executing workflows |
-
-**Processing flow**:
-1. User selects images and opens quantification dialog
-2. Dialog dynamically loads available workflows from `workflows/` folder
-3. User selects workflow and configures settings
-4. `QuantificationWorker.doInBackground()`:
-   - Generates a `run_id` (`YYYYMMDD_HHMMSS_ffffff`) and creates `Runs/{run_id}/Cell_Selections/`
-   - Loops through each image → each ROI
-   - Crops ROI region and saves as temp file
-   - Delegates to workflow's `process_roi()` method
-   - Calls workflow's `analyze_results()` method
-   - Saves each image's cell outlines into this run's `Cell_Selections/`
-5. `QuantificationWorker.done()`:
-   - Aggregates results by `(filename, roi_name)`
-   - Writes `Runs/{run_id}/{YYYYMMDD}_results.csv`
-   - Writes `Runs/{run_id}/run_metadata.json`
+- **main_gui.py** — the project manager: image table + Project Summary (image and
+  per-region ROI counts), the ROI-template list, and the **Current Workflow**
+  panel (select / new / edit / duplicate / delete). Launches the ROI editor, run
+  dialog, and Results Viewer.
+- **project_model.py** — `Project` / `ProjectImage`; `project.json` load/save
+  (`selected_workflow`), migration of legacy layouts, `has_cached_objects()` and
+  `has_outlines()` for enabling review.
+- **quantification.py** — `QuantificationDialog` (per-run options over the
+  pre-selected workflow) and `QuantificationWorker` (segmentation + classification
+  in batch mode; writes run metadata; opens the viewer).
+- **workflow_config.py** — `WorkflowDefinition` (v2), `WorkflowStore`, `.ilp`
+  label/colour/type introspection, and `build_workflow_instance()` which resolves
+  providers from the registry and returns a `PipelineRunner`.
+- **workflow_editor.py** — stage-based editor: a provider dropdown per stage
+  (classification filtered by compatibility), each provider's own parameter panel,
+  the class table (with "Populate from object classifier"), and v2 save.
+- **step_registry.py / steps/** — provider discovery and the `StepProvider`
+  interface (`produces`/`consumes`, `build_panel`, `gather_params`, `validate`,
+  `run`).
+- **pipeline_runner.py / postprocess.py** — run the stages and the shared
+  `run_post()` post-processing.
+- **results_viewer.py / results_export.py** — interactive tuning, preview, and
+  batch export from cached labels.
 
 ---
 
-### 6. Results Viewer — [`results_viewer.py`](../lib/results_viewer.py)
+## Key design decisions
 
-| Class | Purpose |
-|-------|---------|
-| `ResultsViewer` | Dialog for viewing an image with overlays |
-| `RunChangeListener` | Reloads overlays and metadata when a different run is selected |
-| `ImageWindowListener` | Syncs dialog lifecycle with image window |
-
-**Features**:
-- Scans `Runs/` for every run containing outlines for this image, most recent first
-- Run selector dropdown (shown only when the image appears in more than one run)
-- Display image with toggleable overlays:
-  - Analysis ROIs (user-drawn regions, per-image and shared across runs)
-  - Cell outlines (detected objects, loaded from the selected run)
-- Show the selected run's processing metadata (workflow, date, and each setting) read from its `run_metadata.json`
-
----
-
-## Workflow Plugin System
-
-### Base Class — [`base_workflow.py`](../workflows/base_workflow.py)
-
-Abstract interface that all workflows must implement:
-
-```python
-class BaseWorkflow:
-    display_name = "..."        # Shown in dropdown
-    description = "..."         # Tooltip
-    
-    def get_settings_panel(models_dict) -> JPanel    # Custom UI
-    def gather_settings(panel) -> dict               # Extract settings
-    def get_result_columns() -> list[str]            # Custom CSV columns
-    
-    # REQUIRED:
-    def process_roi(cropped_imp, temp_path, prob_map_path, settings) -> ImagePlus
-    def analyze_results(result_imp, roi, offset_x, offset_y, settings) -> dict
-```
-
-Whatever `gather_settings()` returns is merged into the run settings, and every JSON-serializable entry is recorded in that run's `run_metadata.json` — workflows need no separate logging hook.
-
-### Example Implementation — [`brightfield_cfos.py`](../workflows/brightfield_cfos.py)
-
-Implements two-stage Ilastik classification:
-1. **Pixel Classification**: Generates probability maps
-2. **Object Classification**: Identifies individual cells
-
-Features:
-- Resume capability (skips already-processed files)
-- Configurable watershed segmentation
-- Configurable edge particle exclusion
-
----
-
-## Data Flow Diagram
-
-```mermaid
-flowchart TB
-    subgraph Input
-        A[Source Images]
-        B[User ROIs]
-    end
-    
-    subgraph Processing
-        C[Crop ROI Region]
-        D[Workflow Plugin<br/>process_roi]
-        E[Workflow Plugin<br/>analyze_results]
-    end
-    
-    subgraph "Output — Runs/{run_id}/"
-        G[Cell_Selections/*_Outlines.zip]
-        H["{YYYYMMDD}_results.csv"]
-        I[run_metadata.json]
-    end
-    
-    subgraph "Output — shared"
-        F[Probabilities/]
-    end
-    
-    A --> C
-    B --> C
-    C --> D
-    D --> F
-    D --> E
-    E --> G
-    E --> H
-    D --> I
-```
-
----
-
-## Key Design Decisions
-
-### 1. Folder-Based Projects
-Projects are simple directories with a defined structure. Data is stored in human-readable formats—CSV files for tabular data, JSON for structured metadata, and standard image formats—for maximum interoperability and easy external analysis.
-
-### 2. Run-Based Result Storage
-Project state and results are deliberately separated:
-
-- **`project.json`** (schema `PROJECT_VERSION = "2.0"`): All project state — images, statuses, ROI templates, cached ROI counts.
-- **`Runs/{run_id}/`**: Everything produced by one quantification run, kept together and never overwritten by later runs:
-  - `{YYYYMMDD}_results.csv` — aggregated results (CSV so users can open it in Excel/R/Python)
-  - `Cell_Selections/{ImageName}_Outlines.zip` — detected cell outlines
-  - `run_metadata.json` — the run's provenance:
-    - `processed_date`: ISO timestamp of when the run occurred
-    - `workflow_name`: Which workflow was used
-    - `workflow_settings`: The workflow's settings for this run (JSON-serializable values only; internal keys, the workflow object, and display-only options are filtered out)
-    - `images_processed`: List of image filenames in this run
-    - `total_results`: Count of results generated
-
-Legacy CSV databases are auto-migrated to `project.json` on first open. Projects using the older root-level result layout (`Final_Cell_Selections/`, `Results_DB.csv`, `processing_log.json`) prompt for migration to the run-based layout; images and ROIs are preserved, old result files are removed.
-
-### 3. Plugin Architecture for Workflows
-Workflows are discovered dynamically at runtime by scanning the `workflows/` folder. This allows adding new analysis methods without modifying core code.
-
-### 4. ROI as Source of Truth
-ROI geometry and metadata (name, bregma) are stored directly in Fiji's `.zip` ROI format using custom properties, ensuring compatibility with Fiji's built-in ROI Manager.
-
-### 5. Resume-Capable Processing
-Intermediate files (probability maps, object classifications) are preserved in `Probabilities/`, allowing processing to resume after interruption. Files are named with image, ROI, and index to prevent collisions.
-
-### 6. Metadata Traceability
-The run folder name *is* the `run_id` (`YYYYMMDD_HHMMSS_ffffff`, microseconds included to prevent collisions between rapid successive runs). Because a run's results, outlines, and `run_metadata.json` all live inside that folder, results need no cross-reference key to locate the settings that produced them — the Results Viewer simply reads the metadata file sitting next to the outlines it is displaying.
+1. **Folder-based projects, human-readable outputs** — CSV for tables, JSON for
+   metadata, standard image formats; easy to inspect and analyse externally.
+2. **Pluggable pipeline** — fixed stages + discovered providers with
+   produce/consume contracts; new methods are new files in `steps/`.
+3. **Workflows as data** — reusable JSON definitions, global and selectable per
+   project; the resolved definition is snapshotted into each run for provenance.
+4. **Cheap post-processing, cached expensive stages** — segmentation +
+   classification run once and cache label images; post-processing is interactive
+   and re-exportable without re-running ilastik.
+5. **Run-based results** — each run is a self-contained, timestamped folder; later
+   runs never overwrite earlier ones.
+6. **ROI as source of truth** — geometry + metadata stored in Fiji `.zip` ROIs.

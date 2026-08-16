@@ -1,159 +1,100 @@
-# Quantification Module Overview
+# Quantification Overview
 
-The quantification module (`lib/quantification.py`) performs automated cell detection and counting via a **plugin-based workflow architecture**. Workflows are dynamically discovered from the `workflows/` folder, enabling easy extension without modifying core code.
+Quantification is split into an expensive, run-once phase (segmentation +
+classification) and a cheap, interactive phase (post-processing + export):
+
+- **Run Quantification** (`lib/quantification.py`) runs the pipeline's expensive
+  stages and caches the class-label image per ROI. It does **not** compute
+  outlines or write a CSV.
+- **Results Viewer** (`lib/results_viewer.py`) lets you tune post-processing with
+  live preview and, when satisfied, export outlines + CSV for the whole run.
 
 ---
 
-## Architecture
+## Pipeline
+
+Each analysis is three stages, each filled by a provider selected in the workflow
+definition:
+
+```mermaid
+flowchart LR
+    A[Cropped ROI] --> S[Segmentation provider<br/>e.g. ilastik_pixel]
+    S -->|probability_map| C[Classification provider<br/>e.g. ilastik_object]
+    C -->|class_labels image| P[Post-processing<br/>run_post]
+    P --> O[Outlines + counts]
+```
+
+`build_workflow_instance()` resolves the two providers from `step_registry` and
+wraps them in a `PipelineRunner`. See `architecture.md` for the provider model.
+
+---
+
+## Phase 1 — Run Quantification (segmentation + classification)
+
+`QuantificationDialog` shows the already-selected workflow (chosen in the main
+window's Current Workflow panel) plus per-run options (show images, force
+recalculate). On run, `QuantificationWorker.doInBackground()`:
 
 ```mermaid
 flowchart TD
-    QD[QuantificationDialog]
-    QD -->|selects| BWP[BaseWorkflow Plugin]
-    QD -->|starts| QW[QuantificationWorker]
-    QW -->|for each ROI| PR["workflow.process_roi()"]
-    PR -->|returns| RIP[Result ImagePlus]
-    RIP -->|passed to| AR["workflow.analyze_results()"]
-    AR -->|returns| MD[Measurements Dict]
-    MD --> CSV[Results CSV]
+    R["Create Runs/{run_id}/ and enter batch mode"] --> A[For each selected image]
+    A --> B[Load ROIs from .zip]
+    B --> C[For each ROI: crop → temp file]
+    C --> D["PipelineRunner.process_roi()<br/>segmentation → classification"]
+    D --> E["Cache Probabilities/{image}_{roi}_{i}_objects.tif"]
+    A --> F["Write run_metadata.json (workflow snapshot + default post)"]
+    F --> G[Open Results Viewer on first image]
 ```
 
-| Component | Purpose |
-|-----------|---------|
-| `_discover_workflows()` | Scans `workflows/` and loads all `BaseWorkflow` subclasses |
-| `QuantificationDialog` | Modal dialog with workflow dropdown and dynamic settings panels |
-| `QuantificationWorker` | SwingWorker for background batch processing |
-| `BaseWorkflow` | Abstract base class defining the plugin interface |
+- `run_id` = `YYYYMMDD_HHMMSS_ffffff` (microseconds prevent collisions).
+- Processing runs in ImageJ **batch mode** and closes ilastik's transient display
+  windows, so intermediate images don't clutter the screen (unless "show images"
+  is ticked).
+- No outlines and no CSV are written in this phase — only the cached label images
+  and the run's metadata snapshot.
 
 ---
 
-## Workflow Plugin System
+## Phase 2 — Results Viewer (post-processing + export)
 
-### Plugin Discovery
-At startup, `_discover_workflows()` scans the `workflows/` folder:
-1. Loads `base_workflow.py` to get the `BaseWorkflow` class
-2. Imports all other `.py` files (excluding files starting with `_`)
-3. Instantiates any class that subclasses `BaseWorkflow`
-4. Returns a dict of `{display_name: workflow_instance}`
+The viewer opens on the first processed image and auto-previews detected objects.
 
-### BaseWorkflow Interface
+- **Post-processing controls** — Apply watershed, Exclude edge particles, Min
+  Cell Area, Min Circularity. Changing any control re-runs `run_post()` on the
+  current image's cached labels and updates the overlay + per-class counts. No
+  disk writes.
+- **Export results (all images)** — applies the *same* settings to every image in
+  the run: recomputes from cached labels, writes each `{ImageName}_Outlines.zip`,
+  the aggregated `{YYYYMMDD}_results.csv`, and the tuned `post` block back into the
+  run's `run_metadata.json`.
 
-```
-workflows/base_workflow.py
-```
-
-| Method | Required | Purpose |
-|--------|----------|---------|
-| `display_name` | Yes | String shown in workflow dropdown |
-| `description` | No | Tooltip text |
-| `get_settings_panel(models_dict)` | No | Returns JPanel with custom UI controls |
-| `gather_settings(panel)` | No | Extracts settings dict from panel |
-| `get_result_columns()` | No | Returns list of custom CSV column names |
-| `process_roi(cropped_imp, temp_path, prob_map_path, settings)` | **Yes** | Run detection/classification logic; returns ImagePlus |
-| `analyze_results(result_imp, roi, offset_x, offset_y, settings)` | **Yes** | Extract measurements; returns dict with `outlines` plus the keys named by `get_result_columns()` |
-
-### Built-in Workflows
-
-| Workflow | File | Description |
-|----------|------|-------------|
-| **Brightfield cFos** | `brightfield_cfos.py` | Two-step Ilastik classification (pixel → object) with watershed segmentation |
-| **Template Workflow** | `template_workflow.py` | Comprehensive template demonstrating all UI controls and processing methods |
+There is one set of post-processing settings per run — it is applied uniformly to
+all images, not per image. Because post-processing only reads cached labels,
+re-tuning and re-export never re-run ilastik.
 
 ---
 
-## Processing Pipeline
+## Output files
 
-### 1. Configuration Phase
-`QuantificationDialog` presents:
-- **Workflow dropdown** — dynamically populated from discovered plugins
-- **Workflow settings panel** — swapped when workflow selection changes
-- **Display option** — show/hide intermediate images
+| File | Location | When | Content |
+|------|----------|------|---------|
+| Probability / label maps | `Probabilities/` | Run Quantification | Cached stage outputs, shared across runs |
+| Cell outlines | `Runs/{run_id}/Cell_Selections/{Image}_Outlines.zip` | Export | Detected outlines, tagged with `cell_class` |
+| Results table | `Runs/{run_id}/{YYYYMMDD}_results.csv` | Export | Aggregated per-class counts + areas |
+| Run metadata | `Runs/{run_id}/run_metadata.json` | Run + Export | Workflow definition snapshot + post params used |
 
-### 2. Batch Processing
-`QuantificationWorker.doInBackground()` first mints a `run_id` and creates this run's folder, then processes each image:
+### Results schema
 
-```mermaid
-flowchart TD
-    R["Create Runs/{run_id}/Cell_Selections/"] --> A
-    A[For each selected image] --> B[Load all ROIs from .zip file]
-    B --> C[For each ROI]
-    C --> D["Crop image region → save temp file"]
-    D --> E["workflow.process_roi() → classification/detection"]
-    E --> F["workflow.analyze_results() → measurements"]
-    F --> G[Collect cell outlines]
-    G --> H["Save {image}_Outlines.zip into this run"]
-```
+Base columns + one `count` / `total_area` pair per included class:
 
-The `run_id` is `YYYYMMDD_HHMMSS_ffffff` — microseconds are included so two runs started in the same second cannot collide.
-
-### 3. Workflow Delegation
-The worker delegates processing to the selected workflow plugin:
-
-```python
-# In QuantificationWorker.doInBackground():
-result_imp = workflow.process_roi(cropped_imp, temp_path, prob_map_path, settings)
-analysis = workflow.analyze_results(result_imp, crop_roi, roi_x, roi_y, settings)
-```
-
-### 4. Result Aggregation
-In `done()`, results are aggregated by `(filename, roi_name)`:
-- ROI areas are summed
-- Custom numeric columns are summed
-- Bregma values are averaged
-
-The aggregated table and the run's metadata are then written into the run folder created in step 2.
-
----
-
-## Data Flow
-
-```mermaid
-flowchart TD
-    A[Input Image + ROI] --> B[Crop to ROI]
-    B --> C["workflow.process_roi()"]
-    C -->|produces| D["Intermediate outputs (e.g., *_probabilities.tif)"]
-    C --> E["workflow.analyze_results()"]
-    E --> F["Results: count, total_area, outlines, custom columns"]
-```
-
----
-
-## Output Files
-
-Every run writes into its own folder, `Runs/{run_id}/`. The only shared output is the probability maps, which are reused across runs to support resuming.
-
-| File | Location | Content |
-|------|----------|---------|
-| Probability maps | `Probabilities/` | Intermediate classification output, shared across runs |
-| Cell outlines | `Runs/{run_id}/Cell_Selections/` | One `{ImageName}_Outlines.zip` per image |
-| Results table | `Runs/{run_id}/{YYYYMMDD}_results.csv` | Aggregated quantification data for this run |
-| Run metadata | `Runs/{run_id}/run_metadata.json` | Workflow name, timestamp, settings, images processed |
-
-### Results Schema
-Base columns + workflow-specific columns:
 ```csv
-filename, roi_name, roi_area, bregma_value, [workflow_columns...]
+filename, roi_name, roi_area, bregma_value, cfos_count, cfos_total_area, ctb_count, ctb_total_area, cfos_ctb_count, cfos_ctb_total_area
 ```
 
-> [!NOTE]
-> **Metadata Coupling**: The results CSV carries no run ID column — the enclosing folder name *is* the run ID. The full snapshot of settings (thresholds, model paths, etc.) used to produce a CSV lives in the `run_metadata.json` beside it:
-> ```json
-> {
->   "processed_date": "2026-07-28T14:30:22.871000",
->   "workflow_name": "Brightfield cFos",
->   "workflow_settings": { "apply_watershed": true, "exclude_edges": false },
->   "images_processed": ["01_Slice.tif", "02_Slice.tif"],
->   "total_results": 8
-> }
-> ```
-> `workflow_settings` is populated automatically from `gather_settings()` — non-serializable and display-only values are filtered out, so workflows need no separate logging hook.
+Rows are aggregated by `(filename, roi_name)`: areas and per-class counts are
+summed, bregma values averaged.
 
-Example for Brightfield cFos (each workflow defines its own columns via `get_result_columns()`):
-```csv
-filename, roi_name, roi_area, bregma_value, cell_count, total_cell_area
-```
-
-> [!NOTE]
-> Multiple ROI sub-regions with the same name are aggregated in the final results, with bregma values averaged.
-
----
+> The CSV carries no run-ID column — the enclosing folder name *is* the run ID,
+> and the full workflow snapshot (providers, classifiers, class map, and the
+> post-processing settings used for the export) lives in `run_metadata.json`
+> beside it.

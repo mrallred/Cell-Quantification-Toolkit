@@ -1,115 +1,122 @@
-# Creating Custom Workflows
+# Creating Workflows
 
-This guide explains how to create your own quantification workflow for the Cell Quantification Toolkit.
+There are two levels to this:
 
----
-
-## Quick Start
-
-1. Copy `workflows/template_workflow.py` to a new file (e.g., `my_workflow.py`)
-2. Rename the class and set `display_name`
-3. Implement `process_roi()` with your detection logic
-4. Implement `analyze_results()` to extract measurements
-5. Restart the toolkit — your workflow appears in the dropdown
+1. **Create a workflow** (no code) — combine existing pipeline providers into a
+   saved workflow definition using the editor.
+2. **Add a new pipeline provider** (code) — implement a new segmentation or
+   classification method that then becomes selectable in the editor.
 
 ---
 
-## Class Attributes
+## 1. Create a workflow in the editor (no code)
+
+A workflow is three stages — Segmentation → Classification → Post-processing —
+plus a class map. Post-processing is *not* set here; it is tuned later in the
+Results Viewer.
+
+1. In the main window's **Current Workflow** panel, click **New…** (or
+   **Edit…** / **Duplicate…**).
+2. **Name** and describe the workflow.
+3. **Segmentation** — pick a provider and set its parameters (for
+   `ilastik_pixel`, choose the pixel-classification `.ilp`).
+4. **Classification** — pick a provider (only those compatible with the chosen
+   segmentation are shown) and set its parameters (for `ilastik_object`, choose
+   the object-classification `.ilp`).
+5. **Classes** — click **Populate from object classifier** to read the class
+   names and colours straight from the `.ilp`, then tick **Include** for the
+   classes you want counted (leave artifact/background unticked). You can also add
+   rows manually: `Label` is the pixel value in the classification output.
+6. **Save.** The definition is written to `workflow_defs/<name>.json` and is
+   available to every project.
+
+Classifiers are validated on save (the file must exist and be the right ilastik
+project type — a pixel classifier can't be used in the object slot).
+
+To run it: select the workflow in the Current Workflow panel, select images, and
+click **Run Quantification**. Review and export from the Results Viewer.
+
+---
+
+## 2. Add a new pipeline provider (code)
+
+Providers live in `steps/` and are discovered automatically. Each subclasses
+`StepProvider` (`steps/base_step.py`) and declares which stage it fills and what
+it produces/consumes so the editor can gate compatible combinations.
 
 ```python
-class MyWorkflow(BaseWorkflow):
-    display_name = "My Workflow"      # Shown in dropdown
-    description = "Brief tooltip"     # Shown on hover
+# steps/my_segmenter.py
+import os
+from ij import IJ
+
+try:                       # StepProvider is injected by the registry loader
+    StepProvider
+except NameError:
+    import sys
+    _d = os.path.dirname(os.path.abspath(__file__))
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+    from base_step import StepProvider
+
+
+class MySegmenter(StepProvider):
+    stage = "segmentation"                 # or "classification"
+    type_id = "my_segmenter"               # stable id stored in the JSON
+    display_name = "My Segmenter"
+    produces = ["instance_labels"]         # contract tokens
+    consumes = []
+
+    def available(self):
+        return True                        # e.g. check a required plugin exists
+
+    def default_params(self):
+        return {"threshold": 0.5}
+
+    def build_panel(self, params):
+        # return a Swing JPanel of controls (store references for gather_params)
+        ...
+
+    def gather_params(self, panel=None):
+        return {"threshold": float(self._spin.getValue())}
+
+    def validate(self):
+        return []                          # list of problem strings ([] == OK)
+
+    def run(self, ctx):
+        # ctx has: temp_path, prob_map_path, show_images, force_recalculate
+        # produce your output and set it on ctx, e.g.:
+        # ctx["instance_labels_path"] = ...  /  ctx["class_labels_imp"] = imp
+        return ctx
 ```
 
----
+### Contract tokens
 
-## Required Methods
+| Stage | Typical `produces` | Typical `consumes` |
+|-------|--------------------|--------------------|
+| segmentation | `probability_map`, `instance_labels` | (none) |
+| classification | `class_labels` | `probability_map`, `instance_labels` |
 
-Your class must inherit from `BaseWorkflow` and implement:
+A classification provider is offered in the editor only if its `consumes`
+intersects the chosen segmentation's `produces` (or it consumes nothing). The
+final post-processing stage is shared (`postprocess.run_post`) and consumes the
+`class_labels` image the classification provider returns as
+`ctx["class_labels_imp"]`.
 
-### `process_roi(cropped_imp, temp_path, prob_map_path, settings) → ImagePlus`
+### Helpers available on `StepProvider`
 
-Main processing logic. Receives a cropped ROI image, returns a result image (e.g., binary mask).
+- `self._list_models()` → `{basename: full_path}` of `.ilp` files in `models/`.
+- `self._ilp_workflow_name(path)` → the ilastik `workflowName` (for type checks).
+- `self._close_transient_windows(tokens)` → close stray ilastik display windows.
 
-```python
-def process_roi(self, cropped_imp, temp_path, prob_map_path, settings):
-    # Your detection/classification logic here
-    result = cropped_imp.duplicate()
-    IJ.run(result, "8-bit", "")
-    IJ.setThreshold(result, 128, 255)
-    IJ.run(result, "Convert to Mask", "")
-    return result
-```
+### Tips
 
-### `analyze_results(result_imp, roi, offset_x, offset_y, settings) → dict`
+- **DEV_MODE** in `Launch_Toolkit.py` reloads `lib/`, `workflows/`, and provider
+  code without restarting Fiji.
+- Cache expensive outputs under `ctx["prob_map_path"]` and skip work if the file
+  already exists (this is what enables resume + fast re-export).
+- Use `IJ.log("...")` for debugging.
 
-Extract measurements from the result image. Return a dict with keys matching `get_result_columns()`.
-
-- Include `'outlines'` (list of ROIs) if you want cell selections saved for visualization — they are written to the current run's `Cell_Selections/` folder
-
-```python
-def analyze_results(self, result_imp, roi, offset_x, offset_y, settings):
-    rm = RoiManager(True)
-    rt = ResultsTable()
-    pa = ParticleAnalyzer(ParticleAnalyzer.SHOW_OUTLINES, Measurements.AREA, rt, 20, float('inf'))
-    pa.setRoiManager(rm)
-    pa.analyze(result_imp)
-    
-    outlines = rm.getRoisAsArray() or []
-    rm.close()
-    
-    return {
-        'outlines': outlines,  # Base code translates to absolute coordinates
-        'my_count': rt.getCounter(),
-        'my_area': sum(rt.getColumn(rt.getColumnIndex("Area")) or [0])
-    }
-```
-
-> **Note**: Outlines are returned in cropped image coordinates. The base code automatically translates them to full image coordinates.
-
----
-
-## Optional Methods
-
-### `get_settings_panel(models_dict) → JPanel`
-
-Return a Swing panel with UI controls. Common components:
-
-| Control | Use Case |
-|---------|----------|
-| `JComboBox` | Model selection, dropdowns |
-| `JSpinner` | Numeric values with bounds |
-| `JCheckBox` | Boolean options |
-| `JTextField` | Text input |
-
-### `gather_settings(panel) → dict`
-
-Extract values from your panel into a settings dictionary.
-
-### `get_result_columns() → list[str]`
-
-Custom CSV columns beyond `filename`, `roi_name`, `roi_area`, `bregma_value`.
-
-> **Note**: There is no separate logging hook. Everything `gather_settings()` returns is recorded in the run's `run_metadata.json` automatically (JSON-serializable values only), so settings like model names show up in the Results Viewer without extra work.
-
----
-
-## File Structure
-
-```
-workflows/
-├── base_workflow.py      # Don't modify - defines interface
-├── template_workflow.py  # Copy and customize
-├── brightfield_cfos.py   # Example implementation
-└── my_workflow.py        # Your custom workflow
-```
-
----
-
-## Tips
-
-- **DEV_MODE**: Set `DEV_MODE = True` in `Launch_Toolkit.py` to reload workflows without restarting Fiji
-- **Debugging**: Use `IJ.log("message")` for logging
-- **External tools**: Use `temp_path` to pass images to Ilastik or other tools
-- **Resume capability**: Save intermediate files to `prob_map_path` and check if they exist before reprocessing
+> **Legacy note:** the old `workflows/` `BaseWorkflow` plugins
+> (`template_workflow.py`, `brightfield_cfos.py`, …) are retained but hidden and
+> superseded by the provider pipeline. New work should be a `StepProvider` in
+> `steps/`, not a `BaseWorkflow` in `workflows/`.

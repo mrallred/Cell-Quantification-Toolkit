@@ -2,7 +2,7 @@
 
 A Fiji plugin for project-based, ROI-specific, and automated cell detection and quantification in microscopy images. 
 
-So far I've only implemented a cell detection workflow for brightfield DAB-stained images, which utilizes Ilastik pixel and object classification. However, the quantification module is designed to be easily extensible to allow development of custom workflows for different types of microscopy images.
+Analysis is built as a pluggable pipeline — **segmentation → classification → post-processing** — where each stage is filled by a swappable provider. A **workflow** is a saved definition that picks a provider (and settings) for each stage plus a class map. Two ilastik-based providers ship today (pixel classification for segmentation, object classification for classification), and the built-in workflows cover single-label brightfield DAB-cFos and two-colour costained cFos + CtB detection. New methods are added by dropping a provider into `steps/` — no core changes.
 
 ## Installation
 
@@ -44,8 +44,9 @@ The best way to install the Cell Quantification Toolkit is from the Fiji update 
 1. **Create/Open Project** — Select a folder (will create project structure if new)
 2. **Import Images** — Add images to the `Images/` folder
 3. **Define ROIs** — Use the ROI Editor to draw analysis regions
-4. **Run Quantification** — Select images, choose a workflow, and process
-5. **View Results** — Each run writes its own folder under `Runs/`, containing the results CSV, cell outlines, and the settings used
+4. **Select/Create a Workflow** — In the Current Workflow panel, pick an existing workflow or build one (choose classifiers + class map). Workflows are global and reusable across projects.
+5. **Run Quantification** — Select images and run. This does segmentation + classification only and caches the results (no CSV yet).
+6. **Review & Export** — The Results Viewer opens automatically: adjust post-processing (watershed, min size, etc.) with live preview, then **Export results (all images)** to write the outlines and CSV. The same settings apply to every image in the run.
 
 ## Project Structure
 
@@ -68,9 +69,14 @@ MyProject/
 > [!NOTE]
 > Projects created by earlier versions (with `Final_Cell_Selections/`, `Results_DB.csv`, and `processing_log.json` at the project root) are detected on open. The toolkit offers to migrate them to the run-based layout, which removes those old result files — your images and ROIs are preserved.
 
-## Creating Custom Workflows
+## Creating Workflows
 
-See [`docs/creating_workflows.md`](docs/creating_workflows.md) for a guide on building your own quantification workflows in a python script.
+You can build a workflow in the editor with no code — pick a segmentation and a
+classification provider plus a class map (see the Current Workflow panel).
+Developers can add entirely new methods (e.g. StarDist, intensity-cutoff
+classification) by dropping a provider into `steps/`.
+
+See [`docs/creating_workflows.md`](docs/creating_workflows.md) for both.
 
 ## Documentation
 

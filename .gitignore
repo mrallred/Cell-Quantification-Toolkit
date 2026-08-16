@@ -1,3 +1,5 @@
 *py.class
 docs/literature_review_cFos_IHC_segmentation.md
+docs/pluggable_pipeline_plan.md
+docs/workflow_generalization_plan.md
 models/*
