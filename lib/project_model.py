@@ -39,6 +39,18 @@ class ProjectImage(object):
     def has_roi(self):
         """ Checks if corrosponding ROI file exists """
         return os.path.exists(self.roi_path)
+
+    def has_cached_objects(self):
+        """True if any cached object-classification label image exists for this
+        image (i.e. it has been segmented/classified and can be reviewed)."""
+        prob_dir = os.path.join(self.project_path, "Probabilities")
+        if not os.path.isdir(prob_dir):
+            return False
+        base = os.path.splitext(self.filename)[0] + "_"
+        for f in os.listdir(prob_dir):
+            if f.startswith(base) and f.endswith("_objects.tif"):
+                return True
+        return False
     
     def add_roi(self, roi_data):
         """ Adds an ROI's data to the image"""
@@ -76,6 +88,7 @@ class Project(object):
         self._verify_and_create_dirs()
         self.images = []  # list of ProjectImage objects
         self.roi_templates = []  # List of {'name': str, 'default_bregma': str}
+        self.selected_workflow = None  # name of the globally-defined workflow this project last used
         
         # Check for migration to run-based structure
         self._migrate_to_run_based()
@@ -214,6 +227,9 @@ class Project(object):
             
             # Load ROI templates
             self.roi_templates = data.get('roi_templates', [])
+
+            # Load the project's last-selected workflow (may be None)
+            self.selected_workflow = data.get('selected_workflow')
             
             # Load images
             images_dir = self.paths['images']
@@ -255,6 +271,7 @@ class Project(object):
                 'last_modified': datetime.datetime.now().isoformat(),
                 'total_roi_count': total_roi_count,  # Cached for progress bar
                 'roi_templates': self.roi_templates,
+                'selected_workflow': self.selected_workflow,
                 'images': images_data
             }
             

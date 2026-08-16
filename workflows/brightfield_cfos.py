@@ -29,6 +29,9 @@ class BrightfieldCfosWorkflow(BaseWorkflow):
     
     display_name = "Brightfield cFos"
     description = "Cell detection using Ilastik pixel + object classification for DAB-stained tissue"
+    # Superseded by the configurable workflow + workflow_defs/brightfield_cfos.json.
+    # Kept for reference; hidden so it does not appear as a code-discovered workflow.
+    hidden = True
     
     def __init__(self):
         self.pixel_combo = None

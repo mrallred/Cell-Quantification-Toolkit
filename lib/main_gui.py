@@ -23,13 +23,15 @@ from javax.swing.border import EmptyBorder
 from javax.swing.filechooser import FileNameExtensionFilter, FileFilter
 
 #  Java AWT (Graphics & Layout)
-from java.awt import BorderLayout, FlowLayout, Font, GridLayout
+from java.awt import BorderLayout, FlowLayout, Font, GridLayout, Color
 
 # Internal Modules
 from .project_model import Project, ProjectImage
 from .roi_editor import ROIEditor
 from .quantification import QuantificationDialog, QuantificationWorker, ProgressDialog
 from .results_viewer import ResultsViewer
+from .workflow_config import WorkflowStore, WorkflowDefinition, build_workflow_instance
+from .workflow_editor import WorkflowEditorDialog
 
 
 # Internal folder names that should be hidden during project folder selection
@@ -58,7 +60,11 @@ class ProjectManagerGUI(WindowAdapter):
         self.project = None
         self.unsaved_changes = False
         self.save_proj_item = None
-        
+
+        # Global workflow definitions (shared across projects)
+        self.workflow_store = WorkflowStore()
+        self.current_workflow_def = None
+
         self.frame = JFrame("Project Manager")
         self.frame.setSize(1100, 700)
         self.frame.setLayout(BorderLayout())
@@ -94,13 +100,12 @@ class ProjectManagerGUI(WindowAdapter):
         self.project_name_label.setBorder(EmptyBorder(10,10,10,10))
         self.frame.add(self.project_name_label, BorderLayout.NORTH)
 
-        # ROI Template List (replaces file tree)
+        # --- Regions to analyze (list + management buttons) ---
         self.template_list_model = DefaultListModel()
         self.template_list = JList(self.template_list_model)
         template_scroll_pane = JScrollPane(self.template_list)
         template_scroll_pane.setBorder(BorderFactory.createTitledBorder("Regions to analyze"))
 
-        # Template management buttons
         template_button_panel = JPanel(GridLayout(0, 1, 5, 5))
         self.add_template_btn = JButton("Add Region", actionPerformed=self._add_template_action)
         self.remove_template_btn = JButton("Remove Region", actionPerformed=self._remove_template_action)
@@ -109,13 +114,16 @@ class ProjectManagerGUI(WindowAdapter):
         template_button_panel.add(self.add_template_btn)
         template_button_panel.add(self.remove_template_btn)
 
-        left_panel = JPanel(BorderLayout())
-        left_panel.add(template_scroll_pane, BorderLayout.CENTER)
-        left_panel.add(template_button_panel, BorderLayout.SOUTH)
+        regions_panel = JPanel(BorderLayout())
+        regions_panel.add(template_scroll_pane, BorderLayout.CENTER)
+        regions_panel.add(template_button_panel, BorderLayout.SOUTH)
 
+        # Right side: Regions on top, Workflow below (flipped vertically)
         right_panel = JPanel(BorderLayout())
+        right_panel.add(regions_panel, BorderLayout.CENTER)
+        right_panel.add(self._build_workflow_panel(), BorderLayout.SOUTH)
 
-        # Image table 
+        # --- Project images table ---
         image_cols = ["Filename", "ROI File", "# ROIs", "Status"]
         self.image_table_model = DefaultTableModel(None, image_cols)
         self.image_table = JTable(self.image_table_model)
@@ -123,21 +131,184 @@ class ProjectManagerGUI(WindowAdapter):
         self.image_table.getSelectionModel().addListSelectionListener(self.on_image_selection)
         image_table_pane = JScrollPane(self.image_table)
         image_table_pane.setBorder(BorderFactory.createTitledBorder("Project Images"))
-        
-        # ROI detail table
-        self.roi_table = JTable()
-        roi_table_pane = JScrollPane(self.roi_table)
-        roi_table_pane.setBorder(BorderFactory.createTitledBorder("ROI Details"))
-        
-        # Split pane for two tables
-        right_split_pane = JSplitPane(JSplitPane.VERTICAL_SPLIT, image_table_pane, roi_table_pane)
-        right_split_pane.setDividerLocation(300)
-        right_panel.add(right_split_pane, BorderLayout.CENTER)
 
-        # Main split pane for template list and tables
-        main_split_pane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left_panel, right_panel)
-        main_split_pane.setDividerLocation(220)
+        # --- Project summary (replaces the old ROI Details table) ---
+        summary_pane = self._build_summary_panel()
+
+        # Left side: images on top, summary below
+        left_split_pane = JSplitPane(JSplitPane.VERTICAL_SPLIT, image_table_pane, summary_pane)
+        left_split_pane.setDividerLocation(320)
+
+        # Main split: tables on the LEFT, regions + workflow on the RIGHT
+        main_split_pane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, left_split_pane, right_panel)
+        main_split_pane.setDividerLocation(720)
         self.frame.add(main_split_pane, BorderLayout.CENTER)
+
+    # ------------------------------------------------------------------
+    # Workflow panel (global workflow definitions)
+    # ------------------------------------------------------------------
+    def _build_workflow_panel(self):
+        """Panel showing the current workflow plus select/new/edit/etc buttons."""
+        panel = JPanel(BorderLayout())
+        panel.setBorder(BorderFactory.createTitledBorder("Current Workflow"))
+
+        self.workflow_summary_label = JLabel(self._workflow_summary_html())
+        panel.add(self.workflow_summary_label, BorderLayout.CENTER)
+
+        btns = JPanel(GridLayout(0, 2, 4, 4))
+        self.wf_select_btn = JButton("Select...", actionPerformed=self._select_workflow_action)
+        self.wf_new_btn = JButton("New...", actionPerformed=self._new_workflow_action)
+        self.wf_edit_btn = JButton("Edit...", actionPerformed=self._edit_workflow_action)
+        self.wf_dup_btn = JButton("Duplicate...", actionPerformed=self._duplicate_workflow_action)
+        self.wf_delete_btn = JButton("Delete...", actionPerformed=self._delete_workflow_action)
+        for b in (self.wf_select_btn, self.wf_new_btn, self.wf_edit_btn,
+                  self.wf_dup_btn, self.wf_delete_btn):
+            btns.add(b)
+        panel.add(btns, BorderLayout.SOUTH)
+        return panel
+
+    def _workflow_summary_html(self):
+        d = self.current_workflow_def
+        if not d:
+            return "<html><i>No workflow selected.</i><br>Use Select or New.</html>"
+        cells = ", ".join(c.get('display', c.get('key', '')) for c in d.cell_classes()) or "(none)"
+        return ("<html><b>{name}</b><br>"
+                "pixel: {px}<br>object: {obj}<br>"
+                "classes: {cells}<br>min area: {ms} px</html>").format(
+                    name=d.name, px=d.pixel_classifier, obj=d.object_classifier,
+                    cells=cells, ms=d.post.get('min_cell_size'))
+
+    def _refresh_workflow_summary(self):
+        if getattr(self, 'workflow_summary_label', None) is not None:
+            self.workflow_summary_label.setText(self._workflow_summary_html())
+
+    def _set_current_workflow(self, name, persist=True):
+        """Load a workflow definition by name and make it the project's current one."""
+        defn = self.workflow_store.load(name) if name else None
+        self.current_workflow_def = defn
+        if persist and self.project is not None:
+            self.project.selected_workflow = defn.name if defn else None
+            self.set_unsaved_changes(True)
+        self._refresh_workflow_summary()
+
+    def _select_workflow_action(self, event):
+        names = self.workflow_store.names()
+        if not names:
+            JOptionPane.showMessageDialog(self.frame, "No workflows defined yet. Use 'New...' to create one.",
+                                          "No Workflows", JOptionPane.INFORMATION_MESSAGE)
+            return
+        current = self.current_workflow_def.name if self.current_workflow_def else names[0]
+        choice = JOptionPane.showInputDialog(self.frame, "Select a workflow:", "Select Workflow",
+                                             JOptionPane.PLAIN_MESSAGE, None, names, current)
+        if choice is not None:
+            self._set_current_workflow(str(choice))
+
+    def _new_workflow_action(self, event):
+        editor = WorkflowEditorDialog(self.frame, self.workflow_store, definition=None)
+        saved = editor.show_dialog()
+        if saved is not None:
+            self._set_current_workflow(saved.name)
+
+    def _edit_workflow_action(self, event):
+        if not self.current_workflow_def:
+            JOptionPane.showMessageDialog(self.frame, "Select a workflow first.",
+                                          "No Workflow", JOptionPane.INFORMATION_MESSAGE)
+            return
+        original_name = self.current_workflow_def.name
+        editor = WorkflowEditorDialog(self.frame, self.workflow_store, definition=self.current_workflow_def)
+        saved = editor.show_dialog()
+        if saved is not None:
+            if saved.name != original_name:
+                self.workflow_store.delete(original_name)  # renamed: drop the old file
+            self._set_current_workflow(saved.name)
+
+    def _duplicate_workflow_action(self, event):
+        if not self.current_workflow_def:
+            JOptionPane.showMessageDialog(self.frame, "Select a workflow to duplicate.",
+                                          "No Workflow", JOptionPane.INFORMATION_MESSAGE)
+            return
+        clone = WorkflowDefinition(self.current_workflow_def.to_dict())
+        clone.name = self.current_workflow_def.name + " copy"
+        editor = WorkflowEditorDialog(self.frame, self.workflow_store, definition=clone, is_new=True)
+        saved = editor.show_dialog()
+        if saved is not None:
+            self._set_current_workflow(saved.name)
+
+    def _delete_workflow_action(self, event):
+        if not self.current_workflow_def:
+            JOptionPane.showMessageDialog(self.frame, "Select a workflow to delete.",
+                                          "No Workflow", JOptionPane.INFORMATION_MESSAGE)
+            return
+        name = self.current_workflow_def.name
+        result = JOptionPane.showConfirmDialog(self.frame, "Delete workflow '{}'?".format(name),
+                                               "Confirm Delete", JOptionPane.YES_NO_OPTION)
+        if result == JOptionPane.YES_OPTION:
+            self.workflow_store.delete(name)
+            self._set_current_workflow(None)
+
+    # ------------------------------------------------------------------
+    # Project summary panel
+    # ------------------------------------------------------------------
+    def _build_summary_panel(self):
+        """Project-wide summary: image counts + ROIs per region."""
+        panel = JPanel(BorderLayout(6, 6))
+        panel.setBorder(BorderFactory.createTitledBorder("Project Summary"))
+
+        header = JPanel(GridLayout(0, 1, 2, 2))
+        self.summary_images_label = JLabel("Images: 0")
+        self.summary_total_roi_label = JLabel("Total ROIs: 0")
+        self.summary_noroi_label = JLabel("Images without ROIs: 0")
+        header.add(self.summary_images_label)
+        header.add(self.summary_total_roi_label)
+        header.add(self.summary_noroi_label)
+        panel.add(header, BorderLayout.NORTH)
+
+        self.summary_table_model = DefaultTableModel(["Region", "ROIs"], 0)
+        self.summary_table = JTable(self.summary_table_model)
+        roi_scroll = JScrollPane(self.summary_table)
+        roi_scroll.setBorder(BorderFactory.createTitledBorder("ROIs per region"))
+        panel.add(roi_scroll, BorderLayout.CENTER)
+        return panel
+
+    def _update_summary(self):
+        """Recompute the project summary from the current project state."""
+        if getattr(self, 'summary_table_model', None) is None:
+            return
+
+        images = self.project.images if self.project else []
+        region_names = [t.get('name', '') for t in (self.project.roi_templates if self.project else [])]
+
+        num_images = len(images)
+        num_without = sum(1 for img in images if len(img.rois) == 0)
+        region_counts = dict((n, 0) for n in region_names)
+        unassigned = 0
+        total_rois = 0
+
+        for img in images:
+            for roi in img.rois:
+                total_rois += 1
+                name = roi.get('roi_name', '') or ''
+                best = None
+                for rn in region_names:
+                    # A region matches when the ROI name equals it or starts with
+                    # it (ROI names look like "<region>" or "<region> <sub#>").
+                    if rn and (name == rn or name.startswith(rn)):
+                        if best is None or len(rn) > len(best):
+                            best = rn
+                if best is not None:
+                    region_counts[best] += 1
+                else:
+                    unassigned += 1
+
+        self.summary_images_label.setText("Images: {}".format(num_images))
+        self.summary_total_roi_label.setText("Total ROIs: {}".format(total_rois))
+        self.summary_noroi_label.setText("Images without ROIs: {}".format(num_without))
+
+        self.summary_table_model.setRowCount(0)
+        for rn in region_names:
+            self.summary_table_model.addRow([rn, region_counts.get(rn, 0)])
+        if unassigned:
+            self.summary_table_model.addRow(["(unassigned)", unassigned])
 
     def build_status_bar(self):
         control_panel = JPanel(BorderLayout())
@@ -211,11 +382,12 @@ class ProjectManagerGUI(WindowAdapter):
         """Launches the ResultsViewer dialog for the selected image."""
         selected_row = self.image_table.getSelectedRow()
         if selected_row == -1: return
+        self.open_results_viewer(self.project.images[selected_row])
 
-        selected_image = self.project.images[selected_row]
-        
-        # The ResultsViewer will scan run folders for this image's outlines
-        viewer = ResultsViewer(self.frame, selected_image, self.project)
+    def open_results_viewer(self, image_obj):
+        """Open the Results Viewer for a given image (used by Show Results and
+        automatically after a quantification run)."""
+        viewer = ResultsViewer(self.frame, image_obj, self.project)
         viewer.show()
 
     def on_image_selection(self, event):
@@ -249,23 +421,16 @@ class ProjectManagerGUI(WindowAdapter):
 
                 selected_image = self.project.images[selected_row]
                 self.status_label.setText("Selected: {}".format(selected_image.filename))
-                self.show_results_button.setEnabled(selected_image.has_outlines())
-
-                # Populate the bottom ROI details table for the selected image
-                editable_model = EditableROIsTableModel(selected_image)
-                editable_model.addTableModelListener(lambda e: self.set_unsaved_changes(True))
-                self.roi_table.setModel(editable_model)
+                # Reviewable once segmented (cached objects) or already exported.
+                self.show_results_button.setEnabled(
+                    selected_image.has_outlines() or selected_image.has_cached_objects())
 
             elif selection_count > 1:
                 self.status_label.setText("Selected: {} images".format(selection_count))
-                # Clear the details table when multiple images are selected
-                self.roi_table.setModel(EditableROIsTableModel(None)) 
                 self.show_results_button.setEnabled(False)
 
             else: # Corresponds to selection_count == 0
                 self.status_label.setText("No Image(s) Selected")
-                # Clear the details table when the selection is empty
-                self.roi_table.setModel(EditableROIsTableModel(None)) 
                 self.show_results_button.setEnabled(False)
 
     def toggle_select_all_action(self, event):
@@ -297,7 +462,24 @@ class ProjectManagerGUI(WindowAdapter):
 
         selected_images = [self.project.images[row] for row in selected_rows]
 
-        quant_dialog = QuantificationDialog(self.frame, selected_images)
+        if not self.current_workflow_def:
+            JOptionPane.showMessageDialog(
+                self.frame,
+                "Select or create a workflow first, using the Current Workflow panel.",
+                "No Workflow Selected", JOptionPane.WARNING_MESSAGE)
+            return
+
+        problems = self.current_workflow_def.validate()
+        if problems:
+            JOptionPane.showMessageDialog(
+                self.frame,
+                "Workflow '{}' can't run:\n- {}".format(
+                    self.current_workflow_def.name, "\n- ".join(problems)),
+                "Invalid Workflow", JOptionPane.WARNING_MESSAGE)
+            return
+
+        workflow = build_workflow_instance(self.current_workflow_def)
+        quant_dialog = QuantificationDialog(self.frame, selected_images, workflow)
         settings = quant_dialog.show_dialog()
 
         if settings:
@@ -474,6 +656,17 @@ class ProjectManagerGUI(WindowAdapter):
         self.add_template_btn.setEnabled(True)
         self.remove_template_btn.setEnabled(True)
 
+        # 7. Restore the project's selected workflow (if it still exists globally)
+        name = getattr(self.project, 'selected_workflow', None)
+        if name and self.workflow_store.exists(name):
+            self.current_workflow_def = self.workflow_store.load(name)
+        else:
+            self.current_workflow_def = None
+        self._refresh_workflow_summary()
+
+        # 8. Refresh the project summary (image + per-region ROI counts)
+        self._update_summary()
+
     def update_view_for_image(self, updated_image):
         """
         Finds and updates a single image's row in the JTable instead of
@@ -487,9 +680,12 @@ class ProjectManagerGUI(WindowAdapter):
                 self.image_table_model.setValueAt(len(updated_image.rois), i, 2)
                 self.image_table_model.setValueAt(updated_image.status, i, 3)
                 
-                # Refresh the ROI details table as well
+                # Refresh selection-dependent buttons/status
                 self.on_image_selection(None) # Pass a dummy event or refactor to take an index
                 break
+
+        # ROI counts changed for this image, so refresh the project summary
+        self._update_summary()
 
     def _update_template_list(self):
         """Refreshes the template list display."""

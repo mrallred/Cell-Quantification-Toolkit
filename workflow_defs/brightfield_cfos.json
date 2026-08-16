@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "name": "Brightfield cFos",
+  "description": "Single-label cell detection for DAB-stained cFos tissue.",
+  "pixel_classifier": "BrightField_cFos_Pixel.ilp",
+  "object_classifier": "BrightField_cFos_Object.ilp",
+  "classes": [
+    { "label": 1, "key": "cfos",     "display": "cFos",     "color": [255, 0, 0],     "include": true },
+    { "label": 2, "key": "artifact", "display": "Artifact", "color": [128, 128, 128], "include": false }
+  ],
+  "post": {
+    "apply_watershed": true,
+    "exclude_edges": true,
+    "min_cell_size": 10,
+    "min_circularity": 0.0
+  }
+}

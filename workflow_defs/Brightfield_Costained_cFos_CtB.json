@@ -1,0 +1,80 @@
+{
+  "classes": [
+    {
+      "include": true, 
+      "color": [
+        255, 
+        225, 
+        25
+      ], 
+      "display": "cFos", 
+      "label": 1, 
+      "key": "cfos"
+    }, 
+    {
+      "include": true, 
+      "color": [
+        0, 
+        130, 
+        200
+      ], 
+      "display": "CtB", 
+      "label": 2, 
+      "key": "ctb"
+    }, 
+    {
+      "include": true, 
+      "color": [
+        230, 
+        25, 
+        75
+      ], 
+      "display": "cFos+CtB", 
+      "label": 3, 
+      "key": "cfos_ctb"
+    }, 
+    {
+      "include": false, 
+      "color": [
+        70, 
+        240, 
+        240
+      ], 
+      "display": "artifact", 
+      "label": 4, 
+      "key": "artifact"
+    }, 
+    {
+      "include": false, 
+      "color": [
+        60, 
+        180, 
+        75
+      ], 
+      "display": "background", 
+      "label": 5, 
+      "key": "background"
+    }
+  ], 
+  "description": "Cell detection for costained DAB-cFos (brown) and CtB (blue/gray) tissue. Classifies each detected cell as cFos+, CtB+, or cFos & CtB+.", 
+  "classification": {
+    "type": "ilastik_object", 
+    "params": {
+      "project": "20260814_tiff_cFos-CtB_costain_object_classifier.ilp"
+    }
+  }, 
+  "schema_version": 2, 
+  "post": {
+    "exclude_edges": false, 
+    "min_cell_size": 10, 
+    "apply_watershed": false, 
+    "min_circularity": 0.0
+  }, 
+  "name": "Brightfield Costained cFos + CtB", 
+  "segmentation": {
+    "type": "ilastik_pixel", 
+    "params": {
+      "project": "20260814_tiff_cFos-CtB_costain_pixel_classifier.ilp"
+    }
+  }
+}

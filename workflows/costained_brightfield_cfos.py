@@ -51,6 +51,9 @@ class CostainedBrightfieldCfosWorkflow(BaseWorkflow):
 
     display_name = "Brightfield Costained cFos + CtB"
     description = "Cell detection using Ilastik pixel + object classification for constained DAB-cFos and CtB (blue/gray) tissue"
+    # Superseded by the configurable workflow + workflow_defs/costained_cfos.json.
+    # Kept for reference; hidden so it does not appear as a code-discovered workflow.
+    hidden = True
 
     def __init__(self):
         self.pixel_combo = None

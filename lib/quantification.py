@@ -144,23 +144,14 @@ class QuantificationDialog(JDialog):
     Modal dialog to configure settings for a batch quantification process.
     Dynamically loads workflows from the workflows folder.
     """
-    def __init__(self, parent_frame, selected_images):
+    def __init__(self, parent_frame, selected_images, workflow):
         super(QuantificationDialog, self).__init__(parent_frame, "Quantification Settings", True)
 
         self.selected_images = selected_images
         self.settings = None
-        self.models_dict = self._get_models()
-        
-        # Discover available workflows
-        self.workflows_dict, self.workflow_errors = _discover_workflows()
-        if self.workflow_errors:
-            error_msg = "Some workflows failed to load:\n" + "\n".join(self.workflow_errors)
-            JOptionPane.showMessageDialog(parent_frame, error_msg, "Workflow Loading Errors", JOptionPane.WARNING_MESSAGE)
-        if not self.workflows_dict:
-            IJ.log("Warning: No workflows found in workflows folder.")
-        
-        # Track current workflow's settings panel
-        self.current_workflow_panel = None
+        # Workflow is chosen in the main window's Workflow panel and passed in.
+        self.workflow = workflow
+        self.definition = getattr(workflow, 'definition', None)
 
         # Main panel
         main_panel = JPanel(BorderLayout(10, 10))
@@ -179,12 +170,10 @@ class QuantificationDialog(JDialog):
         # Top: workflow selection + common options
         top_panel = JPanel(GridLayout(0, 2, 10, 10))
         
-        # Workflow selection
-        workflow_names = list(self.workflows_dict.keys())
-        top_panel.add(JLabel("Choose Your Quantification Workflow:"))
-        self.workflow_combo = JComboBox(workflow_names)
-        self.workflow_combo.addActionListener(self._on_workflow_change)
-        top_panel.add(self.workflow_combo)
+        # Selected workflow (chosen in the main window's Workflow panel)
+        top_panel.add(JLabel("Workflow:"))
+        wf_name = self.definition.name if self.definition else "(none selected)"
+        top_panel.add(JLabel(wf_name))
 
         # Common display option
         top_panel.add(JLabel("Display Options:"))
@@ -197,10 +186,11 @@ class QuantificationDialog(JDialog):
         
         settings_container.add(top_panel, BorderLayout.NORTH)
 
-        # Workflow-specific settings panel (will be swapped dynamically)
-        self.workflow_settings_container = JPanel(BorderLayout())
-        self.workflow_settings_container.setBorder(BorderFactory.createTitledBorder("Workflow Settings"))
-        settings_container.add(self.workflow_settings_container, BorderLayout.CENTER)
+        # Read-only summary of the selected workflow definition
+        summary = JPanel(BorderLayout())
+        summary.setBorder(BorderFactory.createTitledBorder("Workflow Summary"))
+        summary.add(JLabel(self._summary_html()), BorderLayout.CENTER)
+        settings_container.add(summary, BorderLayout.CENTER)
 
         main_panel.add(settings_container, BorderLayout.CENTER)
 
@@ -212,54 +202,42 @@ class QuantificationDialog(JDialog):
         button_panel.add(cancel_button)
         main_panel.add(button_panel, BorderLayout.SOUTH)
 
-        # Initialize with first workflow's settings panel
-        self._on_workflow_change(None)
         self.pack()
 
-    def _on_workflow_change(self, event):
-        """Swap the settings panel based on selected workflow."""
-        selected_name = self.workflow_combo.getSelectedItem()
-        if not selected_name:
-            return
-            
-        workflow = self.workflows_dict.get(selected_name)
-        if not workflow:
-            return
-        
-        # Clear existing panel
-        self.workflow_settings_container.removeAll()
-        
-        # Get workflow-specific panel
-        self.current_workflow_panel = workflow.get_settings_panel(self.models_dict)
-        if self.current_workflow_panel:
-            self.workflow_settings_container.add(self.current_workflow_panel, BorderLayout.CENTER)
-        else:
-            # No custom settings for this workflow
-            self.workflow_settings_container.add(JLabel("No additional settings for this workflow."), BorderLayout.CENTER)
-        
-        self.workflow_settings_container.revalidate()
-        self.workflow_settings_container.repaint()
-        self.pack()
+    def _summary_html(self):
+        """Read-only HTML summary of the selected definition."""
+        d = self.definition
+        if not d:
+            return "<html>No workflow selected.</html>"
+        cell = ", ".join(c.get('display', c.get('key', '')) for c in d.cell_classes()) or "(none)"
+        return (
+            "<html>"
+            "<b>{name}</b><br>"
+            "Pixel classifier: {px}<br>"
+            "Object classifier: {obj}<br>"
+            "Cell classes: {cells}<br>"
+            "<i>Post-processing is set later, in the Results Viewer.</i>"
+            "</html>"
+        ).format(
+            name=d.name, px=d.pixel_classifier, obj=d.object_classifier, cells=cell)
 
     def _run_action(self, event):
         """Gathers settings into dictionary and closes dialog."""
-        selected_name = self.workflow_combo.getSelectedItem()
-        workflow = self.workflows_dict.get(selected_name)
-        
-        if workflow:
-            # Gather workflow-specific settings
-            workflow_settings = workflow.gather_settings(self.current_workflow_panel)
-            
-            self.settings = {
-                'workflow': workflow,  # Store workflow instance, not name
-                'workflow_name': selected_name,
-                'images': self.selected_images,
-                'show_images': self.show_images_checkbox.isSelected(),
-                'force_recalculate': self.force_recalculate_checkbox.isSelected()
-            }
-            # Merge workflow-specific settings
-            self.settings.update(workflow_settings)
-            
+        if not self.workflow or not self.definition:
+            self.settings = None
+            self.dispose()
+            return
+
+        self.settings = {
+            'workflow': self.workflow,       # ConfigurableIlastikWorkflow instance
+            'workflow_name': self.definition.name,
+            'images': self.selected_images,
+            'show_images': self.show_images_checkbox.isSelected(),
+            'force_recalculate': self.force_recalculate_checkbox.isSelected()
+        }
+        # Merge classifier paths + post-processing options from the definition
+        self.settings.update(self.definition.to_run_settings())
+
         self.dispose()
 
     def _cancel_action(self,event):
@@ -322,6 +300,7 @@ class QuantificationWorker(SwingWorker):
         self.settings = settings
         self.progress_dialog = progress_dialog
         self.all_results = []
+        self.processed_any = False
 
     def doInBackground(self):
         """
@@ -343,6 +322,17 @@ class QuantificationWorker(SwingWorker):
                 self.value = value
             def run(self):
                 self.dialog.progress_bar.setValue(self.value)
+
+        # Suppress intermediate image windows during processing. Besides being
+        # cleaner, this avoids an ilastik4ij / legacy-ImageJ display error
+        # ("Stack argument out of range") that fires when virtual-stack
+        # probability images are shown and then closed. Reset in done().
+        self._batch_on = not self.settings.get('show_images', False)
+        if self._batch_on:
+            try:
+                IJ.setBatchMode(True)
+            except Exception:
+                self._batch_on = False
 
         images_to_process = self.settings['images']
 
@@ -436,46 +426,22 @@ class QuantificationWorker(SwingWorker):
                         if self.settings.get('show_images', False):
                             imp_cropped.show()
 
-                        # Delegate to workflow plugin for processing
+                        # Run only the expensive stages (segmentation + object
+                        # classification), which cache the class-label image to
+                        # disk. Post-processing, outlines, and CSV export happen
+                        # later in the Results Viewer once the user is satisfied.
                         workflow = self.settings.get('workflow')
                         if workflow:
-                            # Run workflow-specific processing
                             result_imp = workflow.process_roi(imp_cropped, temp_cropped_path, prob_map_path, self.settings)
 
                             if not self.settings.get('show_images', False):
                                 if imp_cropped and imp_cropped.isVisible():
                                     imp_cropped.close()
-
-                            # Analyze the results using workflow plugin
-                            # Pass crop_roi (the closed area version) to ensure mask creation works correctly
-                            analysis = workflow.analyze_results(result_imp, crop_roi, roi_x, roi_y, self.settings)
-
-                            if not self.settings.get('show_images', False):
                                 if result_imp:
                                     result_imp.changes = False
                                     result_imp.close()
 
-                            if analysis.get('outlines'):
-                                # Translate outlines from cropped to absolute coordinates
-                                for outline in analysis['outlines']:
-                                    bounds = outline.getBounds()
-                                    outline.setLocation(bounds.x + roi_x, bounds.y + roi_y)
-                                all_image_outlines.extend(analysis['outlines'])
-
-                            # Collect the base result for this single ROI piece
-                            single_roi_result = {
-                                'filename': image_obj.filename,
-                                'roi_name': roi.getName(),
-                                'roi_area': roi.getStatistics().area,
-                                'bregma_value': bregma_val,
-                                'processing_run_id': self.run_id,
-                            }
-                            # Add workflow-specific columns
-                            for col in workflow.get_result_columns():
-                                if col in analysis:
-                                    single_roi_result[col] = analysis[col]
-                            
-                            self.all_results.append(single_roi_result)
+                            self.processed_any = True
 
 
                     except Exception as e:
@@ -500,22 +466,14 @@ class QuantificationWorker(SwingWorker):
                         update_task = UpdateProgressBarTask(self.progress_dialog, progress)
                         SwingUtilities.invokeLater(update_task)
                 
-                # After processing all ROIs for an image, save the collected cell outlines to run folder
-                if all_image_outlines:
-                    outline_rm = RoiManager(True)
-                    for outline_roi in all_image_outlines:
-                        outline_rm.addRoi(outline_roi)
-                    # Save to run-based folder: Runs/{run_id}/Cell_Selections/{image}_Outlines.zip
-                    base_name, _ = os.path.splitext(image_obj.filename)
-                    outline_path = os.path.join(self.cell_selections_folder, base_name + "_Outlines.zip")
-                    outline_rm.runCommand("Save", outline_path)
-                    outline_rm.close()
+                # No outline saving here - post-processing/export is deferred to
+                # the Results Viewer.
 
                 # Close the original image window if it's not meant to be shown
                 if not self.settings.get('show_images', False) and imp_original and imp_original.isVisible():
                     imp_original.close()
 
-                image_obj.status = "Completed" # Mark for final update
+                image_obj.status = "Segmented"  # classified; awaiting review + export
 
             except Exception as e:
                 IJ.log("ERROR processing '{}': {}".format(image_obj.filename, e))
@@ -529,7 +487,10 @@ class QuantificationWorker(SwingWorker):
                 if not self.settings.get('show_images', False):
                     self._cleanup_stray_windows()
 
-        return "Quantification completed successfully for {} ROIs.".format(roi_counter)
+        # Write the run metadata (workflow snapshot + default post params) so the
+        # Results Viewer can find this run and recompute from the cached labels.
+        self._save_processing_metadata()
+        return "Segmentation & classification complete for {} ROIs.".format(roi_counter)
                 
     
 
@@ -582,13 +543,22 @@ class QuantificationWorker(SwingWorker):
                 except (TypeError, ValueError):
                     pass  # Skip non-serializable values
         
-        return {
+        meta = {
             'processed_date': datetime.datetime.now().isoformat(),
             'workflow_name': self.settings.get('workflow_name', 'Unknown'),
             'workflow_settings': serializable_settings,
             'images_processed': [img.filename for img in self.settings.get('images', [])],
             'total_results': len(self.all_results)
         }
+        # Snapshot the full workflow definition for reproducibility.
+        wf = self.settings.get('workflow')
+        defn = getattr(wf, 'definition', None)
+        if defn is not None:
+            try:
+                meta['workflow_definition'] = defn.to_dict()
+            except Exception:
+                pass
+        return meta
     
     def _save_processing_metadata(self):
         """
@@ -606,81 +576,47 @@ class QuantificationWorker(SwingWorker):
     
     def done(self):
         """ Runs on GUI thread after background work is finished. """
+        final_message = "Processing finished."
         try:
-            if self.all_results:
-                # Get workflow to retrieve custom column names
-                workflow = self.settings.get('workflow')
-                custom_columns = workflow.get_result_columns() if workflow else []
-                
-                aggregated_results = {}
-                bregma_data = {}
-
-                for result in self.all_results:
-                    key = (result['filename'], result['roi_name'])
-                    if key not in aggregated_results:
-                        aggregated_results[key] = result.copy()
-                        bregma_data[key] = {'sum': result['bregma_value'], 'count': 1}
-                    else:
-                        # Sum the base quantitative value
-                        aggregated_results[key]['roi_area'] += result['roi_area']
-                        # Sum workflow-specific numeric columns
-                        for col in custom_columns:
-                            if col in result and col in aggregated_results[key]:
-                                try:
-                                    aggregated_results[key][col] += result[col]
-                                except TypeError:
-                                    pass  # Non-numeric column, skip aggregation
-                        # Add to sum and increment count for averaging bregma
-                        bregma_data[key]['sum'] += result['bregma_value']
-                        bregma_data[key]['count'] += 1
-                
-                # Calculate the average Bregma for each group
-                for key, data in aggregated_results.items():
-                    bregma_sum = bregma_data[key]['sum']
-                    bregma_count = bregma_data[key]['count']
-                    average_bregma = (bregma_sum / bregma_count) if bregma_count > 0 else 0
-                    aggregated_results[key]['bregma_value'] = "{:.3f}".format(average_bregma)
-
-                final_results_list = list(aggregated_results.values())
-                
-                # Build headers: base columns + workflow-specific columns (no run_id needed, it's in folder name)
-                date_prefix = datetime.datetime.now().strftime('%Y%m%d')
-                results_path = os.path.join(self.run_folder, '{}_results.csv'.format(date_prefix))
-                base_headers = ['filename', 'roi_name', 'roi_area', 'bregma_value']
-                headers = base_headers + custom_columns
-                
-                with open(results_path, 'w') as csvfile:
-                    writer = csv.DictWriter(csvfile, fieldnames=headers, extrasaction='ignore')
-                    writer.writeheader()
-                    writer.writerows(final_results_list)
-                
-                # Save processing metadata to JSON log
-                self._save_processing_metadata()
-            
-            # Show final status message
             final_message = self.get()
-            JOptionPane.showMessageDialog(self.progress_dialog, final_message, "Status", JOptionPane.INFORMATION_MESSAGE)
-
-
         except Exception as e:
-            # This will catch errors from the background thread
             IJ.log(traceback.format_exc())
-            JOptionPane.showMessageDialog(self.progress_dialog, "An error occurred during processing:\n" + str(e), "Error", JOptionPane.ERROR_MESSAGE)
+            final_message = "An error occurred during processing:\n" + str(e)
             for image in self.settings['images']:
                 if image.status == "Processing":
                     image.status = "Failed"
         finally:
+            # Leave batch mode before touching windows / opening the viewer.
+            try:
+                IJ.setBatchMode(False)
+            except Exception:
+                pass
+
             self.progress_dialog.dispose()
 
+            # Close stray temporary windows first (before opening the viewer).
             image_ids = WindowManager.getIDList()
             if image_ids:
-                # Iterate over a copy of the list, as closing images modifies the original list.
                 for img_id in list(image_ids):
                     img = WindowManager.getImage(img_id)
                     if img:
                         img.changes = False
                         img.close()
 
-            # Save the final "Completed" or "Failed" statuses and refresh the UI
             self.project.sync_project_db()
             self.parent_gui.update_ui_for_project()
+
+            # Inform the user, then open the Results Viewer on the first processed
+            # image so they can review objects, tune post-processing, and export.
+            JOptionPane.showMessageDialog(
+                self.parent_gui.frame,
+                final_message + "\n\nOpen the Results Viewer to review detections, "
+                "adjust post-processing, and export results.",
+                "Segmentation complete", JOptionPane.INFORMATION_MESSAGE)
+
+            imgs = self.settings.get('images', [])
+            if imgs and self.processed_any:
+                try:
+                    self.parent_gui.open_results_viewer(imgs[0])
+                except Exception as e:
+                    IJ.log("Could not open results viewer: " + str(e))
