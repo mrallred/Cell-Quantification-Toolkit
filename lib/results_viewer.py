@@ -15,6 +15,8 @@ from java.awt import GridLayout, BorderLayout, Color
 from java.awt.event import WindowAdapter, ItemListener
 
 from . import results_export as rexport
+from . import manual_export
+from .workflow_config import WorkflowDefinition
 
 # Display config for multi-class cell outlines, keyed by the 'cell_class'
 # property that workflows write onto each outline ROI. Order here controls the
@@ -82,7 +84,7 @@ class ResultsViewer(WindowAdapter):
         self.overlay_panel = JPanel(GridLayout(0, 1, 2, 2))
         self.overlay_panel.setBorder(BorderFactory.createTitledBorder("Overlay Options"))
 
-        self.analysis_checkbox = JCheckBox("Show Analysis ROIs", True)
+        self.analysis_checkbox = JCheckBox("Show Analysis Regions", True)
         self.analysis_checkbox.setEnabled(bool(self.analysis_rois))
         self.analysis_checkbox.addActionListener(self._update_overlay)
 
@@ -104,10 +106,12 @@ class ResultsViewer(WindowAdapter):
         self.dialog.pack()
         self.dialog.setMinimumSize(self.dialog.getSize())
 
-        # Initial display, then auto-preview so detected objects show immediately
-        # (post-processing is computed from cached labels, not from a prior export).
+        # Initial display. For pipeline runs, auto-preview so detected objects
+        # show immediately (recomputed from cached labels). Manual-counting runs
+        # have no cached labels - just show the saved points.
         self._update_overlay()
-        self._preview()
+        if not self._is_manual_run():
+            self._preview()
 
     # ------------------------------------------------------------------
     # Interactive post-processing
@@ -148,13 +152,29 @@ class ResultsViewer(WindowAdapter):
         self.minsize_spin.addChangeListener(self._preview)
         self.mincirc_spin.addChangeListener(self._preview)
 
-        # Recompute needs the class map (with label values) from the run snapshot.
-        if not self._cell_classes_for_run():
+        # Manual-counting runs have no post-processing to tune (points are fixed);
+        # pipeline runs need a workflow snapshot with class labels to recompute.
+        if self._is_manual_run():
+            # No post-processing to tune (points are fixed), but counts can be
+            # exported from the saved points.
+            self.preview_btn.setEnabled(False)
+            self.ws_cb.setEnabled(False)
+            self.edge_cb.setEnabled(False)
+            self.minsize_spin.setEnabled(False)
+            self.mincirc_spin.setEnabled(False)
+            self.export_btn.setText("Export counts (all images)")
+            self.export_btn.setEnabled(True)
+            self.counts_label.setText("Manual counting run - points shown as overlay.")
+        elif not self._cell_classes_for_run():
             for b in (self.export_btn, self.preview_btn):
                 b.setEnabled(False)
             self.counts_label.setText("Interactive editing needs a workflow snapshot "
                                       "(re-run this workflow to enable).")
         return panel
+
+    def _is_manual_run(self):
+        meta = self._load_metadata_for_run(self.selected_run) if self.selected_run else None
+        return bool(meta and meta.get('kind') == 'manual')
 
     def _cell_classes_for_run(self, run_id=None):
         run_id = run_id or self.selected_run
@@ -196,7 +216,7 @@ class ResultsViewer(WindowAdapter):
         parts = ["{}: {}".format(c.get('display', c.get('key')), totals[c.get('key')]) for c in classes]
         txt = "   ".join(parts)
         if missing:
-            txt += "    ({} ROI(s) not yet processed)".format(missing)
+            txt += "    ({} Region(s) not yet processed)".format(missing)
         self.counts_label.setText(txt)
 
     def _preview(self, event=None):
@@ -230,6 +250,9 @@ class ResultsViewer(WindowAdapter):
                                       "Saved", JOptionPane.INFORMATION_MESSAGE)
 
     def _export_all(self, event=None):
+        if self._is_manual_run():
+            self._export_manual()
+            return
         classes = self._cell_classes_for_run()
         if not classes:
             return
@@ -247,6 +270,32 @@ class ResultsViewer(WindowAdapter):
             msg += "\nSkipped (no cached labels yet): {}".format(", ".join(missing))
         JOptionPane.showMessageDialog(self.dialog, msg, "Export complete", JOptionPane.INFORMATION_MESSAGE)
         self._preview()
+
+    def _export_manual(self):
+        """Count the run's saved points inside each ROI and write the CSV."""
+        meta = self._load_metadata_for_run(self.selected_run)
+        defn_data = meta.get('workflow_definition') if meta else None
+        if not defn_data:
+            JOptionPane.showMessageDialog(self.dialog, "No workflow snapshot for this run.",
+                                          "Export counts", JOptionPane.WARNING_MESSAGE)
+            return
+        result = JOptionPane.showConfirmDialog(
+            self.dialog,
+            "Count the saved points inside each Region for all images and export the results CSV?",
+            "Export counts", JOptionPane.YES_NO_OPTION)
+        if result != JOptionPane.YES_OPTION:
+            return
+        try:
+            defn = WorkflowDefinition(defn_data)
+            done, rows = manual_export.export_counts_for_run(self.project, self.selected_run, defn)
+        except Exception as e:
+            IJ.log("Manual export failed: " + str(e))
+            JOptionPane.showMessageDialog(self.dialog, "Export failed:\n" + str(e),
+                                          "Export counts", JOptionPane.ERROR_MESSAGE)
+            return
+        JOptionPane.showMessageDialog(self.dialog,
+                                      "Exported counts for {} image(s).".format(done),
+                                      "Export complete", JOptionPane.INFORMATION_MESSAGE)
 
     def _find_runs_for_image(self):
         """Find runs applicable to this image: any run with a metadata snapshot

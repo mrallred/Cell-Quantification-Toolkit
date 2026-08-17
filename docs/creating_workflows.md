@@ -1,44 +1,66 @@
 # Creating Workflows
 
-There are two levels to this:
+Three ways to work with workflows:
 
-1. **Create a workflow** (no code) — combine existing pipeline providers into a
-   saved workflow definition using the editor.
-2. **Add a new pipeline provider** (code) — implement a new segmentation or
+1. **Create an automated workflow** (no code) - combine existing pipeline
+   providers into a saved definition.
+2. **Create a manual-counting workflow** (no code) - just define the classes.
+3. **Add a new pipeline provider** (code) - implement a new segmentation or
    classification method that then becomes selectable in the editor.
+
+Workflows are listed in the main window's **Current Workflow** panel. Click a
+workflow to select it, or use **New... / Edit... / Duplicate... / Delete...**.
+Every definition is saved to `workflow_defs/<name>.json` and is available to all
+projects.
 
 ---
 
-## 1. Create a workflow in the editor (no code)
+## 1. Create an automated workflow (no code)
 
-A workflow is three stages — Segmentation → Classification → Post-processing —
-plus a class map. Post-processing is *not* set here; it is tuned later in the
-Results Viewer.
+An automated workflow is three stages - Segmentation -> Classification ->
+Post-processing - plus a class map. Post-processing is *not* set here; it is tuned
+later in the Results tab.
 
-1. In the main window's **Current Workflow** panel, click **New…** (or
-   **Edit…** / **Duplicate…**).
+1. Click **New...**, and set **Workflow type** to *Automated cell classification*.
 2. **Name** and describe the workflow.
-3. **Segmentation** — pick a provider and set its parameters (for
+3. **Segmentation** - pick a provider and set its parameters (for
    `ilastik_pixel`, choose the pixel-classification `.ilp`).
-4. **Classification** — pick a provider (only those compatible with the chosen
+4. **Classification** - pick a provider (only those compatible with the chosen
    segmentation are shown) and set its parameters (for `ilastik_object`, choose
    the object-classification `.ilp`).
-5. **Classes** — click **Populate from object classifier** to read the class
+5. **Classes** - click **Populate from object classifier** to read the class
    names and colours straight from the `.ilp`, then tick **Include** for the
    classes you want counted (leave artifact/background unticked). You can also add
    rows manually: `Label` is the pixel value in the classification output.
-6. **Save.** The definition is written to `workflow_defs/<name>.json` and is
-   available to every project.
+6. **Save.**
 
 Classifiers are validated on save (the file must exist and be the right ilastik
-project type — a pixel classifier can't be used in the object slot).
+project type - a pixel classifier can't be used in the object slot).
 
-To run it: select the workflow in the Current Workflow panel, select images, and
-click **Run Quantification**. Review and export from the Results Viewer.
+To run it: select the workflow, select images, and click **Run Quantification**.
+It runs segmentation + classification and caches the results, then opens the
+**Results** tab where you tune post-processing and export.
 
 ---
 
-## 2. Add a new pipeline provider (code)
+## 2. Create a manual-counting workflow (no code)
+
+1. Click **New...**, and set **Workflow type** to *Manual counting*. The
+   segmentation/classification stages disappear - a manual workflow is just a
+   class map.
+2. **Name** it and add a row per class (display name + colour).
+3. **Save.**
+
+To use it: select the workflow, select images, and click **Run Quantification** to
+open the counting tool. Pick a class, click on its cells (the active class is the
+live multi-point selection; other classes show as a coloured overlay), navigate
+between images, then **Save & Close**. Open the **Results** tab and
+**Export counts (all images)** to count the points inside each ROI and write the
+CSV.
+
+---
+
+## 3. Add a new pipeline provider (code)
 
 Providers live in `steps/` and are discovered automatically. Each subclasses
 `StepProvider` (`steps/base_step.py`) and declares which stage it fills and what
@@ -104,19 +126,16 @@ final post-processing stage is shared (`postprocess.run_post`) and consumes the
 
 ### Helpers available on `StepProvider`
 
-- `self._list_models()` → `{basename: full_path}` of `.ilp` files in `models/`.
-- `self._ilp_workflow_name(path)` → the ilastik `workflowName` (for type checks).
-- `self._close_transient_windows(tokens)` → close stray ilastik display windows.
+- `self._list_models()` -> `{basename: full_path}` of `.ilp` files in `models/`.
+- `self._ilp_workflow_name(path)` -> the ilastik `workflowName` (for type checks).
+- `self._materialize(imp)` -> convert a virtual-stack output (e.g. ilastik's) to a
+  real in-memory image, avoiding an ImageJ2 display crash when it is closed.
+- `self._close_transient_windows(tokens)` -> close stray display windows.
 
 ### Tips
 
-- **DEV_MODE** in `Launch_Toolkit.py` reloads `lib/`, `workflows/`, and provider
-  code without restarting Fiji.
+- **DEV_MODE** in `Launch_Toolkit.py` reloads `lib/` and `steps/` code without
+  restarting Fiji.
 - Cache expensive outputs under `ctx["prob_map_path"]` and skip work if the file
   already exists (this is what enables resume + fast re-export).
 - Use `IJ.log("...")` for debugging.
-
-> **Legacy note:** the old `workflows/` `BaseWorkflow` plugins
-> (`template_workflow.py`, `brightfield_cfos.py`, …) are retained but hidden and
-> superseded by the provider pipeline. New work should be a `StepProvider` in
-> `steps/`, not a `BaseWorkflow` in `workflows/`.

@@ -84,6 +84,9 @@ class IlastikObjectClassification(StepProvider):
         if not object_imp:
             raise Exception("Object classification did not produce a result image.")
 
+        # Convert ilastik's virtual-stack output to a real image before saving/
+        # closing (prevents the ImageJ2 colour-tool virtual-stack crash on close).
+        self._materialize(object_imp)
         IJ.saveAs(object_imp, "Tiff", object_prob_path)
         if not show_images:
             object_imp.hide()

@@ -1,13 +1,22 @@
 # Quantification Overview
 
-Quantification is split into an expensive, run-once phase (segmentation +
+A workflow is either **automated cell classification** (an ilastik pipeline) or
+**manual counting**. In both cases, running is split into a data-gathering step
+and a separate review + export step in the **Results** tab; the CSV is only
+written on export.
+
+**Automated** is split into an expensive, run-once phase (segmentation +
 classification) and a cheap, interactive phase (post-processing + export):
 
 - **Run Quantification** (`lib/quantification.py`) runs the pipeline's expensive
   stages and caches the class-label image per ROI. It does **not** compute
   outlines or write a CSV.
-- **Results Viewer** (`lib/results_viewer.py`) lets you tune post-processing with
+- **Results tab** (`lib/results_viewer.py`) lets you tune post-processing with
   live preview and, when satisfied, export outlines + CSV for the whole run.
+
+**Manual** (`lib/manual_counter.py`, `lib/manual_export.py`): you place points per
+class (saved, no counting), then export counts from the Results tab. See the
+Manual counting section below.
 
 ---
 
@@ -43,7 +52,7 @@ flowchart TD
     C --> D["PipelineRunner.process_roi()<br/>segmentation → classification"]
     D --> E["Cache Probabilities/{image}_{roi}_{i}_objects.tif"]
     A --> F["Write run_metadata.json (workflow snapshot + default post)"]
-    F --> G[Open Results Viewer on first image]
+    F --> G[Open Results tab on first image]
 ```
 
 - `run_id` = `YYYYMMDD_HHMMSS_ffffff` (microseconds prevent collisions).
@@ -55,9 +64,9 @@ flowchart TD
 
 ---
 
-## Phase 2 — Results Viewer (post-processing + export)
+## Phase 2 (automated) — Results tab (post-processing + export)
 
-The viewer opens on the first processed image and auto-previews detected objects.
+The Results tab opens on the first processed image and auto-previews detected objects.
 
 - **Post-processing controls** — Apply watershed, Exclude edge particles, Min
   Cell Area, Min Circularity. Changing any control re-runs `run_post()` on the
@@ -74,21 +83,44 @@ re-tuning and re-export never re-run ilastik.
 
 ---
 
+## Manual counting
+
+For a manual-kind workflow, **Run Quantification** opens the counting tool
+(`ManualCountingDialog`) instead of the pipeline:
+
+- Select a class, then click its cells with the multi-point tool. The active
+  class is the live `PointRoi`; other classes render as a coloured overlay; per
+  class counts update live. Navigate between the selected images with Prev/Next.
+- **Save & Close** writes a points zip per image
+  (`Runs/{run_id}/Cell_Selections/{Image}_Outlines.zip`, one `PointRoi` per class)
+  plus the run metadata. **No counting or CSV happens here.**
+
+Then, in the **Results** tab, **Export counts (all images)** counts the saved
+points inside each analysis ROI (a point is counted in every ROI that contains
+it) and writes the aggregated CSV. Post-processing controls are disabled for
+manual runs.
+
+---
+
 ## Output files
 
 | File | Location | When | Content |
 |------|----------|------|---------|
-| Probability / label maps | `Probabilities/` | Run Quantification | Cached stage outputs, shared across runs |
-| Cell outlines | `Runs/{run_id}/Cell_Selections/{Image}_Outlines.zip` | Export | Detected outlines, tagged with `cell_class` |
-| Results table | `Runs/{run_id}/{YYYYMMDD}_results.csv` | Export | Aggregated per-class counts + areas |
-| Run metadata | `Runs/{run_id}/run_metadata.json` | Run + Export | Workflow definition snapshot + post params used |
+| Probability / label maps | `Probabilities/` | Run Quantification (automated) | Cached stage outputs, shared across runs |
+| Cell outlines / points | `Runs/{run_id}/Cell_Selections/{Image}_Outlines.zip` | Export (automated) / Save (manual) | Outlines (automated) or per-class points (manual), tagged with `cell_class` |
+| Results table | `Runs/{run_id}/{YYYYMMDD}_results.csv` | Export | Aggregated per-class counts (+ areas for automated) |
+| Run metadata | `Runs/{run_id}/run_metadata.json` | Run + Export | Workflow definition snapshot, `kind`, and post params used |
 
 ### Results schema
 
-Base columns + one `count` / `total_area` pair per included class:
+Base columns + per included class. Automated runs emit a `count` and
+`total_area` per class; manual runs emit `count` only:
 
 ```csv
+# automated
 filename, roi_name, roi_area, bregma_value, cfos_count, cfos_total_area, ctb_count, ctb_total_area, cfos_ctb_count, cfos_ctb_total_area
+# manual
+filename, roi_name, roi_area, bregma_value, cfos_count, ctb_count
 ```
 
 Rows are aggregated by `(filename, roi_name)`: areas and per-class counts are

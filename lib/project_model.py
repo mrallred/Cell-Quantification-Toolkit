@@ -40,6 +40,22 @@ class ProjectImage(object):
         """ Checks if corrosponding ROI file exists """
         return os.path.exists(self.roi_path)
 
+    def is_linked(self):
+        """True if the image in Images/ is a symbolic link rather than a copy."""
+        try:
+            return os.path.islink(self.full_path)
+        except Exception:
+            return False
+
+    def location_label(self):
+        """Human-readable source: the link target if linked, else the internal path."""
+        try:
+            if os.path.islink(self.full_path):
+                return "Link -> " + os.path.realpath(self.full_path)
+            return self.full_path
+        except Exception:
+            return self.full_path
+
     def has_cached_objects(self):
         """True if any cached object-classification label image exists for this
         image (i.e. it has been segmented/classified and can be reviewed)."""

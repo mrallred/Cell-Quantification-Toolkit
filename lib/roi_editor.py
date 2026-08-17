@@ -45,7 +45,7 @@ class ROIEditor(WindowAdapter):
             self.rm.runCommand("Show All")
 
         # Build GUI
-        self.base_title = "ROI Editor: " + self.image_obj.filename
+        self.base_title = "Region Editor: " + self.image_obj.filename
         self.frame = JDialog(self.win, self.base_title, False)
         self.frame.setSize(350, 650)
         self.frame.addWindowListener(self)
@@ -60,33 +60,33 @@ class ROIEditor(WindowAdapter):
         self.roi_list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
         self.roi_list.addListSelectionListener(self._on_roi_select)
         list_pane = JScrollPane(self.roi_list)
-        list_pane.setBorder(BorderFactory.createTitledBorder("ROIs"))
+        list_pane.setBorder(BorderFactory.createTitledBorder("Regions"))
 
         # Edit Panel for selected ROI
         edit_panel = JPanel(GridLayout(0, 2, 5, 5))
-        edit_panel.setBorder(BorderFactory.createTitledBorder("Edit Selected ROI"))
+        edit_panel.setBorder(BorderFactory.createTitledBorder("Edit Selected Region"))
         self.roi_name_field = JTextField()
         self.bregma_field = JTextField()
-        edit_panel.add(JLabel("ROI Name:"))
+        edit_panel.add(JLabel("Region Name:"))
         edit_panel.add(self.roi_name_field)
         edit_panel.add(JLabel("Bregma Value:"))
         edit_panel.add(self.bregma_field)
         
-        self.show_all_checkbox = JCheckBox("Show All ROIs", True)
+        self.show_all_checkbox = JCheckBox("Show All Regions", True)
         self.show_all_checkbox.addActionListener(self._toggle_show_all)
         edit_panel.add(self.show_all_checkbox)
         
         # Button panel for actions
         button_panel = JPanel(GridLayout(0, 1, 10, 10))
         button_panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10))
-        add_subregion_button = JButton("Add selection to current ROI", actionPerformed=self._add_subregion)
-        create_button = JButton("Create New ROI (not defined in project)", actionPerformed=self._create_new_roi)
+        add_subregion_button = JButton("Add selection to current Region", actionPerformed=self._add_subregion)
+        create_button = JButton("Create New Region (not defined in project)", actionPerformed=self._create_new_roi)
         update_button = JButton("Update Selection", actionPerformed=self._update_selected_roi)
         delete_button = JButton("Delete Selection", actionPerformed=self._delete_selected_roi)
-        save_button = JButton("Save All ROIs & Close", actionPerformed=self._save_and_close)
+        save_button = JButton("Save All Regions & Close", actionPerformed=self._save_and_close)
 
-        self.ready_checkbox = JCheckBox("Mark as 'ROIs completed'", True)
-        is_ready = (self.image_obj.status == "ROIs completed")
+        self.ready_checkbox = JCheckBox("Mark as 'Regions completed'", True)
+        is_ready = (self.image_obj.status == "Regions completed")
         self.ready_checkbox.setSelected(is_ready)
         self.ready_checkbox.addActionListener(self._toggle_ready_status)
 
@@ -233,7 +233,7 @@ class ROIEditor(WindowAdapter):
         
         new_name = self.roi_name_field.getText().strip()
         if not new_name:
-            JOptionPane.showMessageDialog(self.frame, "Please enter a name in the 'ROI Name' field.", "No Name Provided", JOptionPane.WARNING_MESSAGE)
+            JOptionPane.showMessageDialog(self.frame, "Please enter a name in the 'Region Name' field.", "No Name Provided", JOptionPane.WARNING_MESSAGE)
             return
 
         # Check if name matches a template - warn user
@@ -241,7 +241,7 @@ class ROIEditor(WindowAdapter):
             if t['name'].lower() == new_name.lower():
                 result = JOptionPane.showConfirmDialog(
                     self.frame, 
-                    "'{}' matches a template. Use 'Add selection to current ROI' instead?\nClick No to create as non-template ROI anyway.".format(new_name),
+                    "'{}' matches a template. Use 'Add selection to current Region' instead?\nClick No to create as non-template Region anyway.".format(new_name),
                     "Template Name Detected", 
                     JOptionPane.YES_NO_OPTION
                 )
@@ -300,7 +300,7 @@ class ROIEditor(WindowAdapter):
         """Updates the currently selected ROI with values from the text fields."""
         selected_index = self.roi_list.getSelectedIndex()
         if selected_index == -1 or selected_index >= len(self.list_item_map):
-            JOptionPane.showMessageDialog(self.frame, "Please select an ROI from the list to update.", "No ROI Selected", JOptionPane.WARNING_MESSAGE)
+            JOptionPane.showMessageDialog(self.frame, "Please select a Region from the list to update.", "No Region Selected", JOptionPane.WARNING_MESSAGE)
             return
         
         item = self.list_item_map[selected_index]
@@ -332,7 +332,7 @@ class ROIEditor(WindowAdapter):
             # Case 1: User selected a sub-selection - delete just that ROI
             roi_index = item['roi_index']
             roi_name = self.rm.getRoi(roi_index).getName() or "Untitled"
-            result = JOptionPane.showConfirmDialog(self.frame, "Delete ROI '{}'?".format(roi_name), "Confirm Deletion", JOptionPane.YES_NO_OPTION)
+            result = JOptionPane.showConfirmDialog(self.frame, "Delete Region '{}'?".format(roi_name), "Confirm Deletion", JOptionPane.YES_NO_OPTION)
             if result != JOptionPane.YES_OPTION:
                 return
 
@@ -356,14 +356,14 @@ class ROIEditor(WindowAdapter):
                     rois_to_delete.append(i)
             
             if not rois_to_delete:
-                JOptionPane.showMessageDialog(self.frame, "No ROIs found for this entry.", "Nothing to Delete", JOptionPane.INFORMATION_MESSAGE)
+                JOptionPane.showMessageDialog(self.frame, "No Regions found for this entry.", "Nothing to Delete", JOptionPane.INFORMATION_MESSAGE)
                 return
             
             if is_orphan:
                 # Case 3: Non-template header - delete all ROIs (removes the header too)
                 result = JOptionPane.showConfirmDialog(
                     self.frame, 
-                    "Delete all {} ROIs named '{}'?\nThis will remove the entire entry.".format(len(rois_to_delete), template_name), 
+                    "Delete all {} Regions named '{}'?\nThis will remove the entire entry.".format(len(rois_to_delete), template_name), 
                     "Confirm Deletion", 
                     JOptionPane.YES_NO_OPTION
                 )
@@ -393,7 +393,7 @@ class ROIEditor(WindowAdapter):
 
     def _toggle_ready_status(self, event):
         """Updates the image's status in the project object."""
-        self.image_obj.status = "ROIs completed" if self.ready_checkbox.isSelected() else "In Progress"
+        self.image_obj.status = "Regions completed" if self.ready_checkbox.isSelected() else "In Progress"
         self._set_unsaved_changes(True)
         
     def _save_and_close(self, event=None):
@@ -512,7 +512,7 @@ class ROIEditor(WindowAdapter):
         rois = self.rm.getRoisAsArray()
         for i, roi in enumerate(rois):
             if not roi.getName() or not roi.getName().strip():
-                JOptionPane.showMessageDialog(self.frame, "ROI #{} has no name. Please name all ROIs.".format(i+1), "Validation Error", JOptionPane.WARNING_MESSAGE)
+                JOptionPane.showMessageDialog(self.frame, "Region #{} has no name. Please name all Regions.".format(i+1), "Validation Error", JOptionPane.WARNING_MESSAGE)
                 return False
         
         self.image_obj.rois = [{'roi_name': r.getName(), 'bregma': r.getProperty("comment") or 'N/A'} for r in rois]
@@ -531,7 +531,7 @@ class ROIEditor(WindowAdapter):
         """Creates a new ROI with the same name as the selected template or ROI (for disconnected regions)."""
         selected_index = self.roi_list.getSelectedIndex()
         if selected_index == -1 or selected_index >= len(self.list_item_map):
-            JOptionPane.showMessageDialog(self.frame, "Select a template or existing ROI first.", "No Selection", JOptionPane.WARNING_MESSAGE)
+            JOptionPane.showMessageDialog(self.frame, "Select a template or existing Region first.", "No Selection", JOptionPane.WARNING_MESSAGE)
             return
         
         current_roi = self.imp.getRoi()

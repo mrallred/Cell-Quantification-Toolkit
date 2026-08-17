@@ -537,17 +537,10 @@ class QuantificationWorker(SwingWorker):
             self.project.sync_project_db()
             self.parent_gui.update_ui_for_project()
 
-            # Inform the user, then open the Results Viewer on the first processed
-            # image so they can review objects, tune post-processing, and export.
+            # Inform the user. The Results tab is opened manually (Results button),
+            # not automatically, so it doesn't pop up over their work.
             JOptionPane.showMessageDialog(
                 self.parent_gui.frame,
-                final_message + "\n\nOpen the Results Viewer to review detections, "
+                final_message + "\n\nOpen the Results tab to review detections, "
                 "adjust post-processing, and export results.",
                 "Segmentation complete", JOptionPane.INFORMATION_MESSAGE)
-
-            imgs = self.settings.get('images', [])
-            if imgs and self.processed_any:
-                try:
-                    self.parent_gui.open_results_viewer(imgs[0])
-                except Exception as e:
-                    IJ.log("Could not open results viewer: " + str(e))

@@ -66,12 +66,21 @@ class WorkflowDefinition(object):
     def __init__(self, data=None):
         data = data or {}
         self.schema_version = data.get('schema_version', 2)
+        self.kind = data.get('kind', 'pipeline')   # 'pipeline' (ilastik) | 'manual'
         self.name = data.get('name', 'Untitled Workflow')
         self.description = data.get('description', '')
         self.classes = data.get('classes', [])                      # list of dicts
         post = dict(DEFAULT_POST)
         post.update(data.get('post', {}) or {})
         self.post = post
+
+        if self.is_manual():
+            # Manual counting has no pipeline stages or classifiers.
+            self.segmentation = None
+            self.classification = None
+            self.pixel_classifier = ''
+            self.object_classifier = ''
+            return
 
         # Canonical pipeline stages (schema v2). Derive from the flat v1 fields
         # when absent, so existing v1 definitions load and run unchanged.
@@ -90,17 +99,23 @@ class WorkflowDefinition(object):
         self.object_classifier = (cls.get('params', {}) or {}).get('project', '') \
             if cls.get('type') == 'ilastik_object' else ''
 
+    def is_manual(self):
+        return self.kind == 'manual'
+
     # ---- serialization ----
     def to_dict(self):
-        return {
+        d = {
             'schema_version': 2,
+            'kind': self.kind,
             'name': self.name,
             'description': self.description,
-            'segmentation': self.segmentation,
-            'classification': self.classification,
             'classes': self.classes,
-            'post': self.post,
         }
+        if not self.is_manual():
+            d['segmentation'] = self.segmentation
+            d['classification'] = self.classification
+            d['post'] = self.post
+        return d
 
     @staticmethod
     def from_json(path):
@@ -136,6 +151,10 @@ class WorkflowDefinition(object):
         labels = [c.get('label') for c in self.classes]
         if len(labels) != len(set(labels)):
             problems.append("Class label values must be unique.")
+
+        # Manual counting has no pipeline stages to validate.
+        if self.is_manual():
+            return problems
 
         for stage, spec in (('segmentation', self.segmentation),
                             ('classification', self.classification)):

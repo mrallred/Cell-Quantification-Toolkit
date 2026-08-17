@@ -65,6 +65,24 @@ class StepProvider(object):
                     out[f] = os.path.join(md, f)
         return out
 
+    def _materialize(self, imp):
+        """
+        Replace a virtual stack (as ilastik4ij returns for its HDF5 output) with a
+        real in-memory stack. ilastik4ij's output is a lazy VirtualStack; when it
+        is later closed, ImageJ2's colour tool tries to register/read it and
+        crashes with 'Stack argument out of range' on the half-deleted virtual
+        stack. Materializing up front avoids that entirely.
+        """
+        try:
+            stk = imp.getStack()
+            if stk is not None and stk.isVirtual():
+                from ij.plugin import Duplicator
+                real = Duplicator().run(imp)
+                imp.setStack(real.getStack())
+        except Exception:
+            pass
+        return imp
+
     def _close_transient_windows(self, tokens):
         """Close any open image windows whose title contains one of `tokens`.
         ilastik4ij displays its output (e.g. 'predictions.h5/exported_data')

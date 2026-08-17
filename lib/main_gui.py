@@ -8,6 +8,7 @@ from ij import IJ
 # Java I/O and NIO 
 from java.io import File
 from java.nio.file import Files, StandardCopyOption
+from java.lang import Throwable
 
 # Java Concurrency & Events
 from java.beans import PropertyChangeListener
@@ -23,7 +24,7 @@ from javax.swing.border import EmptyBorder
 from javax.swing.filechooser import FileNameExtensionFilter, FileFilter
 
 #  Java AWT (Graphics & Layout)
-from java.awt import BorderLayout, FlowLayout, Font, GridLayout, Color
+from java.awt import BorderLayout, FlowLayout, Font, GridLayout, Color, Dimension
 
 # Internal Modules
 from .project_model import Project, ProjectImage
@@ -32,6 +33,7 @@ from .quantification import QuantificationDialog, QuantificationWorker, Progress
 from .results_viewer import ResultsViewer
 from .workflow_config import WorkflowStore, WorkflowDefinition, build_workflow_instance
 from .workflow_editor import WorkflowEditorDialog
+from .manual_counter import ManualCountingDialog
 
 
 # Internal folder names that should be hidden during project folder selection
@@ -104,11 +106,11 @@ class ProjectManagerGUI(WindowAdapter):
         self.template_list_model = DefaultListModel()
         self.template_list = JList(self.template_list_model)
         template_scroll_pane = JScrollPane(self.template_list)
-        template_scroll_pane.setBorder(BorderFactory.createTitledBorder("Regions to analyze"))
+        template_scroll_pane.setBorder(BorderFactory.createTitledBorder("Templates"))
 
         template_button_panel = JPanel(GridLayout(0, 1, 5, 5))
-        self.add_template_btn = JButton("Add Region", actionPerformed=self._add_template_action)
-        self.remove_template_btn = JButton("Remove Region", actionPerformed=self._remove_template_action)
+        self.add_template_btn = JButton("Add Template", actionPerformed=self._add_template_action)
+        self.remove_template_btn = JButton("Remove Template", actionPerformed=self._remove_template_action)
         self.add_template_btn.setEnabled(False)
         self.remove_template_btn.setEnabled(False)
         template_button_panel.add(self.add_template_btn)
@@ -124,7 +126,7 @@ class ProjectManagerGUI(WindowAdapter):
         right_panel.add(self._build_workflow_panel(), BorderLayout.SOUTH)
 
         # --- Project images table ---
-        image_cols = ["Filename", "ROI File", "# ROIs", "Status"]
+        image_cols = ["Filename", "Regions File", "# Regions", "Status", "Location"]
         self.image_table_model = DefaultTableModel(None, image_cols)
         self.image_table = JTable(self.image_table_model)
         self.image_table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION)
@@ -148,35 +150,71 @@ class ProjectManagerGUI(WindowAdapter):
     # Workflow panel (global workflow definitions)
     # ------------------------------------------------------------------
     def _build_workflow_panel(self):
-        """Panel showing the current workflow plus select/new/edit/etc buttons."""
-        panel = JPanel(BorderLayout())
+        """Panel listing the global workflows; the selected one is current."""
+        panel = JPanel(BorderLayout(4, 4))
         panel.setBorder(BorderFactory.createTitledBorder("Current Workflow"))
 
-        self.workflow_summary_label = JLabel(self._workflow_summary_html())
-        panel.add(self.workflow_summary_label, BorderLayout.CENTER)
+        self.workflow_list_model = DefaultListModel()
+        self.workflow_list = JList(self.workflow_list_model)
+        self.workflow_list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
+        self.workflow_list.addListSelectionListener(self._on_workflow_list_select)
+        list_scroll = JScrollPane(self.workflow_list)
+        list_scroll.setPreferredSize(Dimension(220, 110))
+        panel.add(list_scroll, BorderLayout.CENTER)
 
-        btns = JPanel(GridLayout(0, 2, 4, 4))
-        self.wf_select_btn = JButton("Select...", actionPerformed=self._select_workflow_action)
+        south = JPanel(BorderLayout(2, 2))
+        self.workflow_summary_label = JLabel(self._workflow_summary_html())
+        south.add(self.workflow_summary_label, BorderLayout.NORTH)
+        btns = JPanel(GridLayout(0, 3, 4, 4))
         self.wf_new_btn = JButton("New...", actionPerformed=self._new_workflow_action)
         self.wf_edit_btn = JButton("Edit...", actionPerformed=self._edit_workflow_action)
         self.wf_dup_btn = JButton("Duplicate...", actionPerformed=self._duplicate_workflow_action)
         self.wf_delete_btn = JButton("Delete...", actionPerformed=self._delete_workflow_action)
-        for b in (self.wf_select_btn, self.wf_new_btn, self.wf_edit_btn,
-                  self.wf_dup_btn, self.wf_delete_btn):
+        for b in (self.wf_new_btn, self.wf_edit_btn, self.wf_dup_btn, self.wf_delete_btn):
             btns.add(b)
-        panel.add(btns, BorderLayout.SOUTH)
+        south.add(btns, BorderLayout.SOUTH)
+        panel.add(south, BorderLayout.SOUTH)
+
+        self._refresh_workflow_list()
         return panel
+
+    def _refresh_workflow_list(self):
+        """Repopulate the workflow list and select the current definition."""
+        if getattr(self, 'workflow_list_model', None) is None:
+            return
+        self._updating_list = True
+        try:
+            self.workflow_list_model.clear()
+            names = self.workflow_store.names()
+            for n in names:
+                self.workflow_list_model.addElement(n)
+            cur = self.current_workflow_def.name if self.current_workflow_def else None
+            if cur in names:
+                self.workflow_list.setSelectedValue(cur, True)
+            else:
+                self.workflow_list.clearSelection()
+        finally:
+            self._updating_list = False
+
+    def _on_workflow_list_select(self, event=None):
+        if getattr(self, '_updating_list', False):
+            return
+        if event is not None and event.getValueIsAdjusting():
+            return
+        val = self.workflow_list.getSelectedValue()
+        if val is not None:
+            self._set_current_workflow(str(val))
 
     def _workflow_summary_html(self):
         d = self.current_workflow_def
         if not d:
-            return "<html><i>No workflow selected.</i><br>Use Select or New.</html>"
+            return "<html><i>No workflow selected.</i> Use New... to create one.</html>"
         cells = ", ".join(c.get('display', c.get('key', '')) for c in d.cell_classes()) or "(none)"
-        return ("<html><b>{name}</b><br>"
-                "pixel: {px}<br>object: {obj}<br>"
-                "classes: {cells}<br>min area: {ms} px</html>").format(
-                    name=d.name, px=d.pixel_classifier, obj=d.object_classifier,
-                    cells=cells, ms=d.post.get('min_cell_size'))
+        if d.is_manual():
+            return "<html><b>{name}</b> &nbsp;(manual counting)<br>classes: {cells}</html>".format(
+                name=d.name, cells=cells)
+        return "<html><b>{name}</b> &nbsp;(automated)<br>classes: {cells}</html>".format(
+            name=d.name, cells=cells)
 
     def _refresh_workflow_summary(self):
         if getattr(self, 'workflow_summary_label', None) is not None:
@@ -191,23 +229,12 @@ class ProjectManagerGUI(WindowAdapter):
             self.set_unsaved_changes(True)
         self._refresh_workflow_summary()
 
-    def _select_workflow_action(self, event):
-        names = self.workflow_store.names()
-        if not names:
-            JOptionPane.showMessageDialog(self.frame, "No workflows defined yet. Use 'New...' to create one.",
-                                          "No Workflows", JOptionPane.INFORMATION_MESSAGE)
-            return
-        current = self.current_workflow_def.name if self.current_workflow_def else names[0]
-        choice = JOptionPane.showInputDialog(self.frame, "Select a workflow:", "Select Workflow",
-                                             JOptionPane.PLAIN_MESSAGE, None, names, current)
-        if choice is not None:
-            self._set_current_workflow(str(choice))
-
     def _new_workflow_action(self, event):
         editor = WorkflowEditorDialog(self.frame, self.workflow_store, definition=None)
         saved = editor.show_dialog()
         if saved is not None:
             self._set_current_workflow(saved.name)
+            self._refresh_workflow_list()
 
     def _edit_workflow_action(self, event):
         if not self.current_workflow_def:
@@ -221,6 +248,7 @@ class ProjectManagerGUI(WindowAdapter):
             if saved.name != original_name:
                 self.workflow_store.delete(original_name)  # renamed: drop the old file
             self._set_current_workflow(saved.name)
+            self._refresh_workflow_list()
 
     def _duplicate_workflow_action(self, event):
         if not self.current_workflow_def:
@@ -233,6 +261,7 @@ class ProjectManagerGUI(WindowAdapter):
         saved = editor.show_dialog()
         if saved is not None:
             self._set_current_workflow(saved.name)
+            self._refresh_workflow_list()
 
     def _delete_workflow_action(self, event):
         if not self.current_workflow_def:
@@ -245,6 +274,7 @@ class ProjectManagerGUI(WindowAdapter):
         if result == JOptionPane.YES_OPTION:
             self.workflow_store.delete(name)
             self._set_current_workflow(None)
+            self._refresh_workflow_list()
 
     # ------------------------------------------------------------------
     # Project summary panel
@@ -256,17 +286,17 @@ class ProjectManagerGUI(WindowAdapter):
 
         header = JPanel(GridLayout(0, 1, 2, 2))
         self.summary_images_label = JLabel("Images: 0")
-        self.summary_total_roi_label = JLabel("Total ROIs: 0")
-        self.summary_noroi_label = JLabel("Images without ROIs: 0")
+        self.summary_total_roi_label = JLabel("Total Regions: 0")
+        self.summary_noroi_label = JLabel("Images without Regions: 0")
         header.add(self.summary_images_label)
         header.add(self.summary_total_roi_label)
         header.add(self.summary_noroi_label)
         panel.add(header, BorderLayout.NORTH)
 
-        self.summary_table_model = DefaultTableModel(["Region", "ROIs"], 0)
+        self.summary_table_model = DefaultTableModel(["Template", "Regions"], 0)
         self.summary_table = JTable(self.summary_table_model)
         roi_scroll = JScrollPane(self.summary_table)
-        roi_scroll.setBorder(BorderFactory.createTitledBorder("ROIs per region"))
+        roi_scroll.setBorder(BorderFactory.createTitledBorder("Regions per template"))
         panel.add(roi_scroll, BorderLayout.CENTER)
         return panel
 
@@ -301,8 +331,8 @@ class ProjectManagerGUI(WindowAdapter):
                     unassigned += 1
 
         self.summary_images_label.setText("Images: {}".format(num_images))
-        self.summary_total_roi_label.setText("Total ROIs: {}".format(total_rois))
-        self.summary_noroi_label.setText("Images without ROIs: {}".format(num_without))
+        self.summary_total_roi_label.setText("Total Regions: {}".format(total_rois))
+        self.summary_noroi_label.setText("Images without Regions: {}".format(num_without))
 
         self.summary_table_model.setRowCount(0)
         for rn in region_names:
@@ -320,13 +350,15 @@ class ProjectManagerGUI(WindowAdapter):
         button_panel = JPanel(FlowLayout(FlowLayout.RIGHT))
 
         self.import_button = JButton("Import Images", enabled=False)
+        self.copy_link_button = JButton("Copy Link into Project", enabled=False)
         self.remove_button = JButton("Remove Selected Image", enabled=False)
         self.select_all_button = JButton("Select All / None")
-        self.roi_button = JButton("Define/Edit ROIs", enabled=False)
+        self.roi_button = JButton("Draw Regions", enabled=False)
         self.quant_button = JButton("Run Quantification", enabled=False)
-        self.show_results_button = JButton("Show Results", enabled=False)
+        self.show_results_button = JButton("Results", enabled=False)
 
         button_panel.add(self.import_button)
+        button_panel.add(self.copy_link_button)
         button_panel.add(self.remove_button)
         button_panel.add(self.select_all_button)
         button_panel.add(self.roi_button)
@@ -337,6 +369,7 @@ class ProjectManagerGUI(WindowAdapter):
         self.frame.add(control_panel, BorderLayout.SOUTH)
 
         self.import_button.addActionListener(self.import_images_action)
+        self.copy_link_button.addActionListener(self.copy_links_into_project_action)
         self.remove_button.addActionListener(self.remove_images_action)
         self.select_all_button.addActionListener(self.toggle_select_all_action)
         self.roi_button.addActionListener(self.open_roi_editor_action)
@@ -390,6 +423,44 @@ class ProjectManagerGUI(WindowAdapter):
         viewer = ResultsViewer(self.frame, image_obj, self.project)
         viewer.show()
 
+    def copy_links_into_project_action(self, event):
+        """Replace selected linked images with real copies inside the project."""
+        selected_rows = self.image_table.getSelectedRows()
+        if not selected_rows:
+            return
+        linked = [self.project.images[r] for r in selected_rows
+                  if self.project.images[r].is_linked()]
+        if not linked:
+            JOptionPane.showMessageDialog(self.frame, "None of the selected images are links.",
+                                          "Nothing to Copy", JOptionPane.INFORMATION_MESSAGE)
+            return
+
+        done = 0
+        failed = []
+        for im in linked:
+            dest = im.full_path
+            try:
+                target = os.path.realpath(dest)   # resolve the link before removing it
+                if not os.path.exists(target):
+                    failed.append(im.filename + " (broken link)")
+                    continue
+                # Copy target -> temp, then swap in, so a failed copy never loses the link.
+                tmp = dest + ".copytmp"
+                Files.copy(File(target).toPath(), File(tmp).toPath(),
+                           StandardCopyOption.REPLACE_EXISTING)
+                os.remove(dest)       # remove the symlink
+                os.rename(tmp, dest)  # replace it with the real copy
+                done += 1
+            except (Exception, Throwable) as e:
+                IJ.log("Could not copy '{}' into project: {}".format(im.filename, e))
+                failed.append(im.filename)
+
+        self.update_ui_for_project()
+        msg = "Copied {} linked image(s) into the project.".format(done)
+        if failed:
+            msg += "\nFailed: {}".format(", ".join(failed))
+        JOptionPane.showMessageDialog(self.frame, msg, "Copy Links", JOptionPane.INFORMATION_MESSAGE)
+
     def on_image_selection(self, event):
         """ 
         Called when the user selects image(s) in the top table.
@@ -404,14 +475,17 @@ class ProjectManagerGUI(WindowAdapter):
             # Enable/disable action buttons based on how many images are selected
             self.roi_button.setEnabled(selection_count == 1)
             self.remove_button.setEnabled(selection_count > 0)
-            
-            # Enable quant button only if at least one selected image has ROIs
+
+            # Enable quant button only if at least one selected image has ROIs;
+            # enable "Copy Link into Project" if any selected image is a link.
             if selection_count > 0:
                 selected_rows = self.image_table.getSelectedRows()
-                has_rois = any(self.project.images[r].has_roi() for r in selected_rows)
-                self.quant_button.setEnabled(has_rois)
+                selected_imgs = [self.project.images[r] for r in selected_rows]
+                self.quant_button.setEnabled(any(im.has_roi() for im in selected_imgs))
+                self.copy_link_button.setEnabled(any(im.is_linked() for im in selected_imgs))
             else:
                 self.quant_button.setEnabled(False)
+                self.copy_link_button.setEnabled(False)
 
             if selection_count == 1:
                 selected_row = self.image_table.getSelectedRow()
@@ -478,6 +552,12 @@ class ProjectManagerGUI(WindowAdapter):
                 "Invalid Workflow", JOptionPane.WARNING_MESSAGE)
             return
 
+        # Manual counting: open the point-placement dialog instead of the pipeline.
+        if self.current_workflow_def.is_manual():
+            ManualCountingDialog(self, self.project, selected_images,
+                                 self.current_workflow_def).show()
+            return
+
         workflow = build_workflow_instance(self.current_workflow_def)
         quant_dialog = QuantificationDialog(self.frame, selected_images, workflow)
         settings = quant_dialog.show_dialog()
@@ -497,7 +577,7 @@ class ProjectManagerGUI(WindowAdapter):
         # Confirm deletion
         count = len(selected_rows)
         message = ("Are you sure you want to permanently delete these {} image(s) "
-                   "and all associated ROI and result files?\n\nThis action cannot be undone.".format(count))
+                   "and all associated Region and result files?\n\nThis action cannot be undone.".format(count))
         title = "Confirm Deletion"
         
         result = JOptionPane.showConfirmDialog(self.frame, message, title, 
@@ -532,8 +612,25 @@ class ProjectManagerGUI(WindowAdapter):
         if chooser.showOpenDialog(self.frame) == JFileChooser.APPROVE_OPTION:
             selected_files = chooser.getSelectedFiles()
 
+            # Ask whether to copy the files into the project or link to them.
+            options = ["Copy into project", "Create links", "Cancel"]
+            choice = JOptionPane.showOptionDialog(
+                self.frame,
+                "How should the selected images be added to the project?\n\n"
+                "Copy: duplicates the files into the project's Images folder\n"
+                "  (uses disk space, but self-contained).\n\n"
+                "Link: creates symbolic links to the originals\n"
+                "  (saves space, but breaks if the originals are moved or deleted;\n"
+                "   on Windows this may require Developer Mode / admin rights and\n"
+                "   will fall back to copying if links can't be created).",
+                "Import Images", JOptionPane.DEFAULT_OPTION, JOptionPane.QUESTION_MESSAGE,
+                None, options, options[0])
+            if choice != 0 and choice != 1:   # Cancel or closed
+                return
+            link_mode = (choice == 1)
+
             # 1. Create an instance of our new worker class
-            worker = ImageImportWorker(self, self.project, selected_files)
+            worker = ImageImportWorker(self, self.project, selected_files, link_mode)
 
             # 2. Create a ProgressMonitor to watch the worker
             progress_monitor = ProgressMonitor(self.frame, "Importing Images", "Starting...", 0, 100)
@@ -638,7 +735,8 @@ class ProjectManagerGUI(WindowAdapter):
                     img.filename,
                     roi_file_status,
                     len(img.rois),
-                    img.status
+                    img.status,
+                    img.location_label()
                 ])
         finally:
             # Re-attach the listener so the UI works normally again.
@@ -663,6 +761,7 @@ class ProjectManagerGUI(WindowAdapter):
         else:
             self.current_workflow_def = None
         self._refresh_workflow_summary()
+        self._refresh_workflow_list()
 
         # 8. Refresh the project summary (image + per-region ROI counts)
         self._update_summary()
@@ -700,7 +799,7 @@ class ProjectManagerGUI(WindowAdapter):
 
     def _add_template_action(self, event):
         """Prompts user to add a new ROI template."""
-        name = JOptionPane.showInputDialog(self.frame, "Enter ROI region name:", "Add Template", JOptionPane.PLAIN_MESSAGE)
+        name = JOptionPane.showInputDialog(self.frame, "Enter template name:", "Add Template", JOptionPane.PLAIN_MESSAGE)
         if name and name.strip():
             # Check for duplicates
             for t in self.project.roi_templates:
@@ -730,12 +829,13 @@ class ImageImportWorker(SwingWorker):
     Handles the image import process on a background thread to keep the GUI responsive,
     and reports progress updates that can be displayed by a progress bar.
     """
-    def __init__(self, parent_gui, project, selected_files):
+    def __init__(self, parent_gui, project, selected_files, link_mode=False):
         super(ImageImportWorker, self).__init__()
 
         self.parent_gui = parent_gui
         self.project = project
         self.selected_files = selected_files
+        self.link_mode = link_mode   # True: symlink into Images/; False: copy
         self.newly_added_count = 0
         self.skipped_files = []
 
@@ -750,8 +850,9 @@ class ImageImportWorker(SwingWorker):
                 break
 
             # Update the note on the progress monitor to show the current file
-            self.firePropertyChange("note", "", "Copying {}...".format(source_file.getName()))
-            
+            verb = "Linking" if self.link_mode else "Copying"
+            self.firePropertyChange("note", "", "{} {}...".format(verb, source_file.getName()))
+
             dest_file = File(images_dir, source_file.getName())
 
             if dest_file.exists():
@@ -759,8 +860,19 @@ class ImageImportWorker(SwingWorker):
                 continue # Skip existing files
 
             try:
-                Files.copy(source_file.toPath(), dest_file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                
+                if self.link_mode:
+                    # Symlink into Images/; fall back to a copy if the OS refuses
+                    # (e.g. Windows without Developer Mode / admin rights).
+                    try:
+                        Files.createSymbolicLink(dest_file.toPath(), source_file.toPath())
+                    except (Exception, Throwable) as le:
+                        IJ.log("Could not link '{}' ({}); copying instead.".format(
+                            source_file.getName(), le))
+                        Files.copy(source_file.toPath(), dest_file.toPath(),
+                                   StandardCopyOption.REPLACE_EXISTING)
+                else:
+                    Files.copy(source_file.toPath(), dest_file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+
                 # Update the project data structure in memory
                 new_image = ProjectImage(dest_file.getName(), self.project.root_dir)
                 new_image.status = "In Progress"

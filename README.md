@@ -2,7 +2,12 @@
 
 A Fiji plugin for project-based, ROI-specific, and automated cell detection and quantification in microscopy images. 
 
-Analysis is built as a pluggable pipeline — **segmentation → classification → post-processing** — where each stage is filled by a swappable provider. A **workflow** is a saved definition that picks a provider (and settings) for each stage plus a class map. Two ilastik-based providers ship today (pixel classification for segmentation, object classification for classification), and the built-in workflows cover single-label brightfield DAB-cFos and two-colour costained cFos + CtB detection. New methods are added by dropping a provider into `steps/` — no core changes.
+A **workflow** is a saved, reusable definition that describes how to quantify cells. There are two kinds:
+
+- **Automated cell classification** — a pluggable pipeline of **segmentation -> classification -> post-processing**, where each stage is filled by a swappable provider. Two ilastik-based providers ship today (pixel classification for segmentation, object classification for classification), and the built-in workflows cover single-label brightfield DAB-cFos and two-colour costained cFos + CtB detection. New methods are added by dropping a provider into `steps/` (no core changes).
+- **Manual counting** — you define classes and click on the cells of each class; points inside each ROI are counted and exported.
+
+Workflows are global and reusable across projects, chosen from a list in the main window.
 
 ## Installation
 
@@ -44,9 +49,13 @@ The best way to install the Cell Quantification Toolkit is from the Fiji update 
 1. **Create/Open Project** — Select a folder (will create project structure if new)
 2. **Import Images** — Add images to the `Images/` folder
 3. **Define ROIs** — Use the ROI Editor to draw analysis regions
-4. **Select/Create a Workflow** — In the Current Workflow panel, pick an existing workflow or build one (choose classifiers + class map). Workflows are global and reusable across projects.
-5. **Run Quantification** — Select images and run. This does segmentation + classification only and caches the results (no CSV yet).
-6. **Review & Export** — The Results Viewer opens automatically: adjust post-processing (watershed, min size, etc.) with live preview, then **Export results (all images)** to write the outlines and CSV. The same settings apply to every image in the run.
+4. **Select/Create a Workflow** — The **Current Workflow** panel shows a list of all workflows; click one to select it, or use **New... / Edit... / Duplicate... / Delete...**. When creating one, choose the type: *Automated cell classification* or *Manual counting*.
+5. **Run Quantification** — Select images and click **Run Quantification**:
+    - *Automated:* runs segmentation + classification only and caches the results (no CSV yet), then opens the **Results** tab.
+    - *Manual:* opens the counting tool — pick a class, click the cells, then **Save & Close**.
+6. **Review & Export (Results tab)** —
+    - *Automated:* adjust post-processing (watershed, min size, etc.) with live preview, then **Export results (all images)** to write the outlines and CSV. One setting applies to every image in the run.
+    - *Manual:* review the points and click **Export counts (all images)** to write the counts CSV.
 
 ## Project Structure
 
@@ -71,10 +80,11 @@ MyProject/
 
 ## Creating Workflows
 
-You can build a workflow in the editor with no code — pick a segmentation and a
-classification provider plus a class map (see the Current Workflow panel).
-Developers can add entirely new methods (e.g. StarDist, intensity-cutoff
-classification) by dropping a provider into `steps/`.
+You can build a workflow in the editor with no code (New... in the Current
+Workflow panel): choose the type, then either pick a segmentation + classification
+provider and a class map (automated), or just define the classes to count
+(manual). Developers can add entirely new automated methods (e.g. StarDist,
+intensity-cutoff classification) by dropping a provider into `steps/`.
 
 See [`docs/creating_workflows.md`](docs/creating_workflows.md) for both.
 

@@ -1,0 +1,41 @@
+{
+  "kind": "manual", 
+  "classes": [
+    {
+      "include": true, 
+      "color": [
+        255, 
+        0, 
+        0
+      ], 
+      "display": "cFos", 
+      "label": 1, 
+      "key": "cfos"
+    }, 
+    {
+      "include": true, 
+      "color": [
+        0, 
+        255, 
+        255
+      ], 
+      "display": "CtB", 
+      "label": 2, 
+      "key": "ctb"
+    }, 
+    {
+      "include": true, 
+      "color": [
+        255, 
+        255, 
+        0
+      ], 
+      "display": "cFos+CtB", 
+      "label": 3, 
+      "key": "cfos_ctb"
+    }
+  ], 
+  "description": "Place points on cells per class; points inside each ROI are counted and exported.", 
+  "schema_version": 2, 
+  "name": "Manual cFos-CtB costain"
+}
