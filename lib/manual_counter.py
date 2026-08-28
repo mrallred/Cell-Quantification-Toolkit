@@ -5,6 +5,11 @@ For a manual-kind workflow: the user goes class by class and clicks on the cells
 of that class using the multi-point tool. Each class's points are kept separately
 (the active class is the live PointRoi; other classes show as a coloured overlay).
 On finish, points inside each analysis ROI are counted per class and exported.
+
+Autosave: while the dialog is open, placed points are written to disk every
+AUTOSAVE_MS milliseconds into a single session run, so a crash or accidental close
+doesn't lose work. The final "Save & Close" reuses that same run (no duplicate),
+and reopening manual counting reloads the most recent saved points.
 """
 import datetime
 
@@ -13,12 +18,16 @@ from ij.gui import PointRoi, Overlay
 from ij.plugin.frame import RoiManager
 
 from javax.swing import (JDialog, JPanel, JLabel, JButton, JRadioButton,
-                         ButtonGroup, BorderFactory, JOptionPane)
+                         ButtonGroup, BorderFactory, JOptionPane, Timer)
 from javax.swing.border import EmptyBorder
 from java.awt import BorderLayout, GridLayout, FlowLayout, Color
-from java.awt.event import MouseAdapter, WindowAdapter
+from java.awt.event import MouseAdapter, WindowAdapter, ActionListener
 
 from . import manual_export
+from .workflow_config import make_run_id
+
+# How often to autosave placed points, in milliseconds.
+AUTOSAVE_MS = 60000
 
 
 def _color(rgb):
@@ -54,6 +63,14 @@ class _CanvasMouse(MouseAdapter):
         self.owner = owner
 
     def mouseReleased(self, event):
+        # Only left-click placements should commit. Ignore right-click / popup
+        # (BUTTON1 == 1 in AWT) so an accidental right-click can't trigger a
+        # commit of a deselected/empty selection.
+        try:
+            if event.isPopupTrigger() or event.getButton() != 1:
+                return
+        except Exception:
+            pass
         self.owner._on_canvas_click()
 
 
@@ -66,6 +83,15 @@ class _WindowGuard(WindowAdapter):
 
     def windowClosing(self, event):
         self.owner._on_window_closing()
+
+
+class _AutosaveTick(ActionListener):
+    """Fires on the Swing timer to autosave placed points."""
+    def __init__(self, owner):
+        self.owner = owner
+
+    def actionPerformed(self, event):
+        self.owner._autosave()
 
 
 class ManualCountingDialog(object):
@@ -87,6 +113,11 @@ class ManualCountingDialog(object):
         self._loaded = set()      # images whose saved points have been reloaded
         self.active_key = self.classes[0].get('key') if self.classes else None
 
+        # Autosave: one run id per counting session, reused by every autosave and
+        # by the final Save & Close, so there is a single run folder.
+        self._run_id = None
+        self._autosave_timer = None
+
         self.dialog = None
         self.win = None
         self._build_ui()   # builds self.content (attached to each image window later)
@@ -104,6 +135,7 @@ class ManualCountingDialog(object):
                                           "Manual Counting", JOptionPane.WARNING_MESSAGE)
             return
         self._open_current()
+        self._start_autosave()
 
     def _attach_dialog(self, win):
         """Parent the control panel to the current image window (like the ROI
@@ -131,8 +163,13 @@ class ManualCountingDialog(object):
         main = JPanel(BorderLayout(6, 6))
         main.setBorder(EmptyBorder(10, 10, 10, 10))
 
+        # Header: current image + autosave status.
+        header = JPanel(GridLayout(0, 1, 0, 2))
         self.image_label = JLabel(" ")
-        main.add(self.image_label, BorderLayout.NORTH)
+        header.add(self.image_label)
+        self.status_label = JLabel(" ")
+        header.add(self.status_label)
+        main.add(header, BorderLayout.NORTH)
 
         # class selector with per-class live counts
         classes_panel = JPanel(GridLayout(0, 1, 2, 2))
@@ -167,6 +204,52 @@ class ManualCountingDialog(object):
         main.add(controls, BorderLayout.SOUTH)
 
         self.content = main
+
+    # ------------------------------------------------------------------
+    # Autosave
+    # ------------------------------------------------------------------
+    def _ensure_run_id(self):
+        if self._run_id is None:
+            self._run_id = make_run_id(self.definition)
+        return self._run_id
+
+    def _start_autosave(self):
+        if self._autosave_timer is None:
+            self._autosave_timer = Timer(AUTOSAVE_MS, _AutosaveTick(self))
+            self._autosave_timer.setRepeats(True)
+        self._autosave_timer.start()
+
+    def _stop_autosave(self):
+        t = getattr(self, '_autosave_timer', None)
+        if t is not None:
+            try:
+                t.stop()
+            except Exception:
+                pass
+
+    def _set_status(self, text):
+        if getattr(self, 'status_label', None) is not None:
+            self.status_label.setText(text)
+
+    def _save_points_run(self):
+        """Write every image's placed points to the session run (overwrites)."""
+        self._commit_active()
+        per_image = [(im, self.points.get(im.filename, {})) for im in self.images]
+        return manual_export.save_points_run(
+            self.project, self._ensure_run_id(), self.definition, per_image)
+
+    def _autosave(self, event=None):
+        """Timer-driven: persist points without closing. Never interrupts the user
+        or pops a dialog; failures are logged only."""
+        if self.imp is None:
+            return
+        try:
+            self._save_points_run()
+            self._mark_unchanged()   # saving must not leave the image 'changed'
+            self._set_status("Autosaved " + datetime.datetime.now().strftime('%H:%M:%S'))
+        except Exception as e:
+            IJ.log("Manual counting autosave failed: " + str(e))
+            self._set_status("Autosave failed (see Log)")
 
     # ------------------------------------------------------------------
     # Image lifecycle
@@ -244,9 +327,23 @@ class ManualCountingDialog(object):
     # Points
     # ------------------------------------------------------------------
     def _commit_active(self):
+        """Capture the live PointRoi into the stored points for the active class.
+
+        Defensive: a stray deselect -- an accidental right-click, Escape, a tool
+        switch, focus loss -- makes getRoi() return None or a non-point selection.
+        Never overwrite stored points in that case, and never let an empty
+        selection wipe a class that currently has points. Deliberate clearing
+        goes through 'Clear class' / 'Remove last point', which set the stored
+        points directly, so refusing accidental empties here is safe."""
         if self.imp is None or not self.active_key:
             return
-        self.points[self._current_fname()][self.active_key] = _extract_points(self.imp.getRoi())
+        roi = self.imp.getRoi()
+        if roi is None or not isinstance(roi, PointRoi):
+            return
+        pts = _extract_points(roi)
+        if not pts and self.points[self._current_fname()].get(self.active_key):
+            return
+        self.points[self._current_fname()][self.active_key] = pts
 
     def _select_class(self, key):
         if self.imp is None:
@@ -326,7 +423,10 @@ class ManualCountingDialog(object):
                 self.imp.setRoi(pr)
             else:
                 self.imp.deleteRoi()
-            self._commit_active()
+            # Store directly (this is a deliberate edit): removing the last point
+            # legitimately leaves an empty set, which the _commit_active guard
+            # would otherwise refuse.
+            self.points[self._current_fname()][self.active_key] = pts
             self._mark_unchanged()
             self._refresh_counts()
 
@@ -357,8 +457,9 @@ class ManualCountingDialog(object):
 
     def _finish(self, event=None):
         self._commit_active()
+        self._stop_autosave()
         per_image = [(im, self.points.get(im.filename, {})) for im in self.images]
-        run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+        run_id = self._ensure_run_id()   # reuse the autosave run so there's no duplicate
         try:
             done = manual_export.save_points_run(self.project, run_id, self.definition, per_image)
         except Exception as e:
@@ -391,6 +492,7 @@ class ManualCountingDialog(object):
         self._cancel()
 
     def _cancel(self, event=None):
+        self._stop_autosave()
         if self.imp is not None:
             self.imp.changes = False
         self._close_current()

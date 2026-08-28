@@ -1,0 +1,71 @@
+{
+  "kind": "pipeline", 
+  "classes": [
+    {
+      "include": true, 
+      "color": [
+        255, 
+        225, 
+        25
+      ], 
+      "display": "cFos", 
+      "label": 1, 
+      "key": "cfos"
+    }, 
+    {
+      "include": true, 
+      "color": [
+        0, 
+        130, 
+        200
+      ], 
+      "display": "CtB", 
+      "label": 2, 
+      "key": "ctb"
+    }, 
+    {
+      "include": true, 
+      "color": [
+        230, 
+        25, 
+        75
+      ], 
+      "display": "cFos+Ctb", 
+      "label": 3, 
+      "key": "cfos_ctb"
+    }, 
+    {
+      "include": false, 
+      "color": [
+        70, 
+        240, 
+        240
+      ], 
+      "display": "Artifact", 
+      "label": 4, 
+      "key": "artifact"
+    }
+  ], 
+  "description": "Costain workflow with the pixel stage's 'Append L*a*b*' option ON: each crop is expanded to a 6-channel R,G,B,L*,a*,b* image before ilastik. Single-class pixel segmentation; multi-class object classification. Both .ilp models must be trained on images exported with macros/Export_RGB_plus_Lab_for_Training.py.", 
+  "classification": {
+    "type": "ilastik_object", 
+    "params": {
+      "project": "2026-8-27_cFos-CtB_RGB-Lab_object_classifier.ilp"
+    }
+  }, 
+  "schema_version": 2, 
+  "post": {
+    "exclude_edges": false, 
+    "min_cell_size": 10, 
+    "apply_watershed": false, 
+    "min_circularity": 0.0
+  }, 
+  "name": "Brightfield Costained cFos + CtB (RGB+Lab)", 
+  "segmentation": {
+    "type": "ilastik_pixel", 
+    "params": {
+      "append_lab": true, 
+      "project": "2026-8-27_cFos-CtB_RGB-Lab_pixel_classifier.ilp"
+    }
+  }
+}

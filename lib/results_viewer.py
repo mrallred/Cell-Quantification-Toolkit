@@ -16,7 +16,7 @@ from java.awt.event import WindowAdapter, ItemListener
 
 from . import results_export as rexport
 from . import manual_export
-from .workflow_config import WorkflowDefinition
+from .workflow_config import WorkflowDefinition, sanitize_name
 
 # Display config for multi-class cell outlines, keyed by the 'cell_class'
 # property that workflows write onto each outline ROI. Order here controls the
@@ -48,9 +48,10 @@ class ResultsViewer(WindowAdapter):
 
         self.image_window = self.imp.getWindow()
         
-        # Find runs containing this image
+        # Find runs (now one folder per workflow) that have output for this image.
         self.available_runs = self._find_runs_for_image()
-        self.selected_run = self.available_runs[0] if self.available_runs else None
+        self.selected_run = self._default_run()
+        self._suppress_preview = False   # guards programmatic control updates
 
         # Load analysis ROIs (these are per-image, not per-run)
         self.analysis_rois = self._load_rois_from_zip(self.image_obj.roi_path)
@@ -76,6 +77,12 @@ class ResultsViewer(WindowAdapter):
             run_panel.setBorder(BorderFactory.createTitledBorder("Select Run"))
             run_panel.add(JLabel("Run:"))
             self.run_combo = JComboBox(self.available_runs)
+            # Sync the visible selection to selected_run BEFORE attaching the
+            # listener, so the dropdown matches what's displayed on first open
+            # (otherwise the box shows item 0 while the overlay follows
+            # _default_run's choice).
+            if self.selected_run in self.available_runs:
+                self.run_combo.setSelectedItem(self.selected_run)
             self.run_combo.addItemListener(RunChangeListener(self))
             run_panel.add(self.run_combo)
             main_panel.add(run_panel, BorderLayout.NORTH)
@@ -109,9 +116,7 @@ class ResultsViewer(WindowAdapter):
         # Initial display. For pipeline runs, auto-preview so detected objects
         # show immediately (recomputed from cached labels). Manual-counting runs
         # have no cached labels - just show the saved points.
-        self._update_overlay()
-        if not self._is_manual_run():
-            self._preview()
+        self._show_run()
 
     # ------------------------------------------------------------------
     # Interactive post-processing
@@ -152,25 +157,45 @@ class ResultsViewer(WindowAdapter):
         self.minsize_spin.addChangeListener(self._preview)
         self.mincirc_spin.addChangeListener(self._preview)
 
-        # Manual-counting runs have no post-processing to tune (points are fixed);
-        # pipeline runs need a workflow snapshot with class labels to recompute.
-        if self._is_manual_run():
-            # No post-processing to tune (points are fixed), but counts can be
-            # exported from the saved points.
-            self.preview_btn.setEnabled(False)
-            self.ws_cb.setEnabled(False)
-            self.edge_cb.setEnabled(False)
-            self.minsize_spin.setEnabled(False)
-            self.mincirc_spin.setEnabled(False)
-            self.export_btn.setText("Export counts (all images)")
-            self.export_btn.setEnabled(True)
-            self.counts_label.setText("Manual counting run - points shown as overlay.")
-        elif not self._cell_classes_for_run():
-            for b in (self.export_btn, self.preview_btn):
-                b.setEnabled(False)
-            self.counts_label.setText("Interactive editing needs a workflow snapshot "
-                                      "(re-run this workflow to enable).")
+        # Enable/disable + labels depend on the SELECTED run's kind; applied here
+        # and re-applied on every run change so switching runs isn't locked to the
+        # first run's mode.
+        self._apply_run_mode()
         return panel
+
+    def _apply_run_mode(self):
+        """Set control enabled-states, the export button, and the status label to
+        match the currently selected run (manual vs automated vs no-snapshot)."""
+        manual = self._is_manual_run()
+        has_classes = bool(self._cell_classes_for_run())
+        tune = (not manual) and has_classes
+        for w in (self.ws_cb, self.edge_cb, self.minsize_spin,
+                  self.mincirc_spin, self.preview_btn):
+            w.setEnabled(tune)
+        self.export_btn.setEnabled(manual or has_classes)
+        if manual:
+            self.export_btn.setText("Export counts (all images)")
+            self.counts_label.setText("Manual counting run - points shown as overlay.")
+        else:
+            self.export_btn.setText("Export results (all images)")
+            if not has_classes:
+                self.counts_label.setText("Interactive editing needs a workflow "
+                                          "snapshot (re-run this workflow to enable).")
+            else:
+                self.counts_label.setText(" ")
+
+    def _reload_post_values(self):
+        """Load the selected run's stored post-processing settings into the
+        controls without firing a live preview."""
+        init = self._initial_post()
+        self._suppress_preview = True
+        try:
+            self.ws_cb.setSelected(bool(init.get('apply_watershed', True)))
+            self.edge_cb.setSelected(bool(init.get('exclude_edges', True)))
+            self.minsize_spin.setValue(int(init.get('min_cell_size', 10)))
+            self.mincirc_spin.setValue(float(init.get('min_circularity', 0.0)))
+        finally:
+            self._suppress_preview = False
 
     def _is_manual_run(self):
         meta = self._load_metadata_for_run(self.selected_run) if self.selected_run else None
@@ -220,11 +245,29 @@ class ResultsViewer(WindowAdapter):
         self.counts_label.setText(txt)
 
     def _preview(self, event=None):
+        if getattr(self, '_suppress_preview', False) or self._is_manual_run():
+            return
         classes = self._cell_classes_for_run()
         if not classes:
             return
         outlines, rows, missing = rexport.recompute_image(
-            self.project, self.image_obj, self._post_params(), classes)
+            self.project, self.image_obj, self._post_params(), classes, self.selected_run)
+        if not outlines and not rows:
+            # No cached labels to recompute from (e.g. an old run whose cache was
+            # cleared/migrated). Never blank the view -- fall back to the saved
+            # exported outlines so results stay visible.
+            saved = self._load_outlines_for_run(self.selected_run)
+            self.outline_rois = saved
+            self.outline_buckets = self._bucket_outlines(saved)
+            self._populate_overlay_panel()
+            self._update_overlay()
+            if saved:
+                self.counts_label.setText("Showing saved outlines - no cached labels "
+                                          "to re-tune here (re-run to enable tuning).")
+            else:
+                self.counts_label.setText("No cached labels or saved outlines for this "
+                                          "image (re-run this workflow).")
+            return
         self.outline_rois = outlines
         self.outline_buckets = self._bucket_outlines(outlines)
         self._populate_overlay_panel()
@@ -236,7 +279,7 @@ class ResultsViewer(WindowAdapter):
         if not classes:
             return
         post = self._post_params()
-        outlines, rows, missing = rexport.recompute_image(self.project, self.image_obj, post, classes)
+        outlines, rows, missing = rexport.recompute_image(self.project, self.image_obj, post, classes, self.selected_run)
         rexport.write_image_outlines(self.project, self.selected_run, self.image_obj, outlines)
         rexport.splice_image_into_csv(self.project, self.selected_run, self.image_obj, rows, classes)
         rexport.update_run_post(self.project, self.selected_run, post)
@@ -296,6 +339,59 @@ class ResultsViewer(WindowAdapter):
         JOptionPane.showMessageDialog(self.dialog,
                                       "Exported counts for {} image(s).".format(done),
                                       "Export complete", JOptionPane.INFORMATION_MESSAGE)
+
+    def _default_run(self):
+        """Open on the project's currently-selected workflow when it has output
+        for this image (so opening Results while 'manual' is selected shows the
+        manual run); otherwise the most recently worked run. Switch freely with
+        the dropdown."""
+        if not self.available_runs:
+            return None
+        sel = getattr(self.project, 'selected_workflow', '') or ''
+        key = sanitize_name(sel) if sel else ''
+        if key and key in self.available_runs:
+            return key
+        runs_dir = self.project.paths.get('runs', '')
+        try:
+            return max(self.available_runs,
+                       key=lambda r: os.path.getmtime(os.path.join(runs_dir, r)))
+        except Exception:
+            return self.available_runs[0]
+
+    def _has_scoped_cache(self):
+        """True if THIS workflow's own probability cache has labels for this image
+        (so recompute is unambiguous)."""
+        d = os.path.join(self.project.paths.get('probabilities', ''),
+                         self.selected_run or '')
+        if not os.path.isdir(d):
+            return False
+        base = os.path.splitext(self.image_obj.filename)[0] + "_"
+        for f in os.listdir(d):
+            if f.startswith(base) and f.endswith("_objects.tif"):
+                return True
+        return False
+
+    def _show_saved(self, note=None):
+        """Display the selected run's saved outlines/points (per-workflow, so
+        automated workflows stay differentiated); never recompute."""
+        self.outline_rois = self._load_outlines_for_run(self.selected_run)
+        self.outline_buckets = self._bucket_outlines(self.outline_rois)
+        self._populate_overlay_panel()
+        self._update_overlay()
+        if note is not None:
+            self.counts_label.setText(note)
+
+    def _show_run(self):
+        """Decide what to display for the current run: manual/no-snapshot -> saved
+        points/outlines; automated with its own cache -> live recompute; automated
+        without its own cache -> saved outlines (re-run to enable tuning)."""
+        if self._is_manual_run() or not self._cell_classes_for_run():
+            self._show_saved()
+        elif self._has_scoped_cache():
+            self._preview()
+        else:
+            self._show_saved("Showing saved outlines - re-run this workflow to "
+                             "enable interactive tuning.")
 
     def _find_runs_for_image(self):
         """Find runs applicable to this image: any run with a metadata snapshot
@@ -419,13 +515,13 @@ class ResultsViewer(WindowAdapter):
         self.overlay_panel.repaint()
 
     def _on_run_change(self, run_id):
-        """Handle run selection change."""
+        """Handle run selection change: reload outlines/points, re-apply the
+        run's mode + stored post settings, and refresh the display."""
         self.selected_run = run_id
-        self.outline_rois = self._load_outlines_for_run(run_id)
-        self.outline_buckets = self._bucket_outlines(self.outline_rois)
-        self._populate_overlay_panel()
         self._update_info_panel()
-        self._update_overlay()
+        self._reload_post_values()
+        self._apply_run_mode()
+        self._show_run()
 
     def _load_rois_from_zip(self, zip_path):
         """Helper function to load all ROIs from a zip file into a list."""

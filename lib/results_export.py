@@ -18,10 +18,32 @@ from ij.plugin.frame import RoiManager
 
 from .postprocess import run_post
 from .quantification import _sanitize_filename, _ensure_closed_area_roi
+from .workflow_config import cache_dir
 
 
 def _run_folder(project, run_id):
     return os.path.join(project.paths['runs'], run_id)
+
+
+def _post_stamp(post_params):
+    """Compact, filename-safe encoding of the post-processing settings."""
+    p = post_params or {}
+    try:
+        circ = ("%.2f" % float(p.get('min_circularity', 0.0))).replace('.', 'p')
+        return "ws{}_edge{}_min{}_circ{}".format(
+            1 if p.get('apply_watershed') else 0,
+            1 if p.get('exclude_edges') else 0,
+            int(p.get('min_cell_size', 0)),
+            circ)
+    except Exception:
+        return "post"
+
+
+def stamped_csv_path(project, run_id, stamp):
+    """A fresh, non-colliding results CSV path: results_<timestamp>__<stamp>.csv."""
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    return os.path.join(_run_folder(project, run_id),
+                        "results_{}__{}.csv".format(ts, stamp))
 
 
 def result_columns(cell_classes):
@@ -32,13 +54,17 @@ def result_columns(cell_classes):
     return cols
 
 
-def cached_label_path(project, image_obj, safe_roi_name, i):
+def cached_label_path(project, image_obj, safe_roi_name, i, run_id):
+    # Scoped to THIS workflow only. We deliberately do NOT fall back to the shared
+    # legacy flat cache: it can't be attributed to a workflow, so falling back
+    # would make different automated workflows recompute to identical results.
+    # Display of old results instead uses each workflow's own saved outlines.
     stem = os.path.splitext(image_obj.filename)[0]
     base = "{}_{}_{}".format(stem, safe_roi_name, i)
-    return os.path.join(project.paths['probabilities'], base + "_objects.tif")
+    return os.path.join(cache_dir(project, run_id), base + "_objects.tif")
 
 
-def recompute_image(project, image_obj, post_params, cell_classes):
+def recompute_image(project, image_obj, post_params, cell_classes, run_id):
     """
     Re-run post-processing for every ROI of an image from its cached label
     images. Returns (absolute_outlines, rows, missing_count).
@@ -60,7 +86,7 @@ def recompute_image(project, image_obj, post_params, cell_classes):
         if crop_roi is None:
             continue
         safe = _sanitize_filename(roi.getName())
-        label_path = cached_label_path(project, image_obj, safe, i)
+        label_path = cached_label_path(project, image_obj, safe, i, run_id)
         if not os.path.exists(label_path):
             missing += 1
             continue
@@ -150,19 +176,22 @@ def _aggregate(rows, custom_columns):
 
 
 def _results_csv_path(project, run_id):
+    """Newest existing results CSV in the run folder (for in-place per-image
+    splicing). New exports use stamped_csv_path() instead."""
     rf = _run_folder(project, run_id)
-    existing = sorted(glob.glob(os.path.join(rf, '*_results.csv')))
+    existing = sorted(glob.glob(os.path.join(rf, 'results_*.csv')) +
+                      glob.glob(os.path.join(rf, '*_results.csv')))
     if existing:
-        return existing[0]
+        return existing[-1]
     date = datetime.datetime.now().strftime('%Y%m%d')
     return os.path.join(rf, date + '_results.csv')
 
 
-def write_run_csv(project, run_id, rows, cell_classes):
+def write_run_csv(project, run_id, rows, cell_classes, post_params=None):
     custom = result_columns(cell_classes)
     headers = ['filename', 'roi_name', 'roi_area', 'bregma_value'] + custom
     final = _aggregate(rows, custom)
-    path = _results_csv_path(project, run_id)
+    path = stamped_csv_path(project, run_id, _post_stamp(post_params))
     with open(path, 'w') as f:
         w = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
         w.writeheader()
@@ -239,13 +268,13 @@ def reexport_all(project, run_id, post_params, cell_classes):
     for image_obj in project.images:
         if not image_obj.has_roi():
             continue
-        outlines, rows, _m = recompute_image(project, image_obj, post_params, cell_classes)
+        outlines, rows, _m = recompute_image(project, image_obj, post_params, cell_classes, run_id)
         if rows:
             write_image_outlines(project, run_id, image_obj, outlines)
             all_rows.extend(rows)
             images_done += 1
         else:
             missing.append(image_obj.filename)
-    write_run_csv(project, run_id, all_rows, cell_classes)
+    write_run_csv(project, run_id, all_rows, cell_classes, post_params=post_params)
     update_run_post(project, run_id, post_params)
     return images_done, missing

@@ -1,5 +1,7 @@
 import os
 import csv
+import re
+import glob
 import json
 import shutil
 import datetime
@@ -48,11 +50,15 @@ class ProjectImage(object):
             return False
 
     def location_label(self):
-        """Human-readable source: the link target if linked, else the internal path."""
+        """Human-readable source: the link target if linked (external, absolute),
+        else the internal copy shown as a path relative to the project root."""
         try:
             if os.path.islink(self.full_path):
                 return "Link -> " + os.path.realpath(self.full_path)
-            return self.full_path
+            try:
+                return os.path.relpath(self.full_path, self.project_path)
+            except (ValueError, Exception):
+                return self.full_path
         except Exception:
             return self.full_path
 
@@ -63,9 +69,12 @@ class ProjectImage(object):
         if not os.path.isdir(prob_dir):
             return False
         base = os.path.splitext(self.filename)[0] + "_"
-        for f in os.listdir(prob_dir):
-            if f.startswith(base) and f.endswith("_objects.tif"):
-                return True
+        # Detect cached labels anywhere: per-workflow subfolders, the legacy flat
+        # layout, or a migration backup (so pre-migration results still count).
+        for root, dirs, files in os.walk(prob_dir):
+            for f in files:
+                if f.startswith(base) and f.endswith("_objects.tif"):
+                    return True
         return False
     
     def add_roi(self, roi_data):
@@ -91,6 +100,140 @@ class ProjectImage(object):
             finally:
                 rm.close()
 
+# ---------------------------------------------------------------------------
+# Run-folder migration to the per-workflow layout (inline: no cross-module
+# import, which fails in this module's reload context). Non-destructive and
+# idempotent -- moves the old Runs/ aside as a backup and rebuilds.
+# ---------------------------------------------------------------------------
+_MIGRATION_MARKER = '.per_workflow_v1'
+
+
+def _sanitize_run_key(name):
+    """MUST match workflow_config.sanitize_name so migrated folder keys line up
+    with the keys make_run_id() produces for future runs."""
+    s = re.sub(r'[^A-Za-z0-9._-]+', '_', (name or '').strip())
+    return s.strip('_') or 'workflow'
+
+
+def _run_workflow_name(run_path):
+    meta_path = os.path.join(run_path, 'run_metadata.json')
+    if not os.path.exists(meta_path):
+        legacy = sorted(glob.glob(os.path.join(run_path, '*_run_metadata.json')))
+        meta_path = legacy[-1] if legacy else None
+    if not meta_path or not os.path.exists(meta_path):
+        return None
+    try:
+        with open(meta_path) as f:
+            return json.load(f).get('workflow_name')
+    except (IOError, ValueError):
+        return None
+
+
+def _copy_run_into_workflow(src, dst):
+    src_cs = os.path.join(src, 'Cell_Selections')
+    if os.path.isdir(src_cs):
+        dst_cs = os.path.join(dst, 'Cell_Selections')
+        if not os.path.isdir(dst_cs):
+            os.makedirs(dst_cs)
+        for fn in os.listdir(src_cs):
+            try:
+                shutil.copy2(os.path.join(src_cs, fn), os.path.join(dst_cs, fn))
+            except (IOError, OSError):
+                pass
+    for cand in ['run_metadata.json'] + [os.path.basename(p) for p in
+                 glob.glob(os.path.join(src, '*_run_metadata.json'))]:
+        sp = os.path.join(src, cand)
+        if os.path.exists(sp):
+            try:
+                shutil.copy2(sp, os.path.join(dst, 'run_metadata.json'))
+            except (IOError, OSError):
+                pass
+    src_run = os.path.basename(src.rstrip(os.sep))
+    for csvp in (glob.glob(os.path.join(src, 'results_*.csv')) +
+                 glob.glob(os.path.join(src, '*_results.csv'))):
+        try:
+            shutil.copy2(csvp, os.path.join(
+                dst, 'migrated_{}__{}'.format(src_run, os.path.basename(csvp))))
+        except (IOError, OSError):
+            pass
+
+
+def _relocate_flat_probabilities(project):
+    prob_dir = project.paths.get('probabilities', '')
+    if not prob_dir or not os.path.isdir(prob_dir):
+        return
+    flat = [f for f in os.listdir(prob_dir)
+            if os.path.isfile(os.path.join(prob_dir, f)) and f.lower().endswith('.tif')]
+    if not flat:
+        return
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup = os.path.join(prob_dir, '_pre_perworkflow_backup_' + ts)
+    if not os.path.isdir(backup):
+        os.makedirs(backup)
+    for f in flat:
+        try:
+            shutil.move(os.path.join(prob_dir, f), os.path.join(backup, f))
+        except (IOError, OSError):
+            pass
+
+
+def _migrate_runs_to_per_workflow(project):
+    runs_dir = project.paths.get('runs', '')
+    if not runs_dir or not os.path.isdir(runs_dir):
+        return
+    if os.path.exists(os.path.join(runs_dir, _MIGRATION_MARKER)):
+        return
+    old_runs = [e for e in os.listdir(runs_dir)
+                if os.path.isdir(os.path.join(runs_dir, e))
+                and not e.startswith('_') and not e.startswith('.')]
+    if not old_runs:
+        _write_migration_marker(runs_dir)
+        return
+
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup = os.path.join(project.root_dir, 'Runs_pre_perworkflow_' + ts)
+    shutil.move(runs_dir, backup)
+    os.makedirs(runs_dir)
+
+    workflows, runs, unclassified = 0, 0, 0
+    seen = set()
+    for run_name in sorted(os.listdir(backup)):
+        src = os.path.join(backup, run_name)
+        if not os.path.isdir(src):
+            continue
+        wfname = _run_workflow_name(src)
+        if not wfname:
+            try:
+                shutil.copytree(src, os.path.join(runs_dir, run_name))
+            except (IOError, OSError):
+                pass
+            unclassified += 1
+            continue
+        key = _sanitize_run_key(wfname)
+        dst = os.path.join(runs_dir, key)
+        if not os.path.isdir(dst):
+            os.makedirs(dst)
+        if key not in seen:
+            seen.add(key)
+            workflows += 1
+        _copy_run_into_workflow(src, dst)
+        runs += 1
+
+    # NOTE: the legacy flat Probabilities/ cache is left in place; cached_label_path
+    # falls back to it so pre-migration results stay viewable/re-tunable.
+    _write_migration_marker(runs_dir)
+    IJ.log("[CQT] Migrated runs to per-workflow layout: {} workflow(s) from {} run(s), "
+           "{} unclassified. Backup: {}".format(workflows, runs, unclassified, backup))
+
+
+def _write_migration_marker(runs_dir):
+    try:
+        with open(os.path.join(runs_dir, _MIGRATION_MARKER), 'w') as f:
+            f.write('migrated to per-workflow layout\n')
+    except IOError:
+        pass
+
+
 class Project(object):
     """ Class representing a project, holding its structure and data once opened from folder """
     
@@ -102,6 +245,17 @@ class Project(object):
         self.name = os.path.basename(os.path.normpath(root_dir))
         self.paths = self._discover_paths()
         self._verify_and_create_dirs()
+
+        # One-time, non-destructive migration of any old per-execution run folders
+        # to the per-workflow layout (moves the old Runs/ aside as a backup and
+        # rebuilds). Idempotent via a marker file; safe to call on every open.
+        # Defined inline (module-level, below) rather than imported, because a
+        # relative import fails in this module's reload context.
+        try:
+            _migrate_runs_to_per_workflow(self)
+        except Exception as _mig_e:
+            IJ.log("[CQT] Run migration skipped: " + str(_mig_e))
+
         self.images = []  # list of ProjectImage objects
         self.roi_templates = []  # List of {'name': str, 'default_bregma': str}
         self.selected_workflow = None  # name of the globally-defined workflow this project last used

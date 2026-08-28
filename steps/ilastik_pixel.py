@@ -1,4 +1,13 @@
-"""Segmentation provider: ilastik Pixel Classification -> probability map."""
+"""Segmentation provider: ilastik Pixel Classification -> probability map.
+
+Optional **Append L*a*b*** mode (a checkbox in the workflow editor): when enabled,
+each ROI crop is expanded to a 6-channel R,G,B,L*,a*,b* image (via
+lib/color_lab.py) BEFORE prediction, and that image replaces ctx['temp_path'] so
+the DOWNSTREAM object classifier runs on the same 6-channel layout too. When you
+turn this on, both the pixel and object .ilp you select must have been trained on
+images exported with macros/Export_RGB_plus_Lab_for_Training.py. Off (default) =
+plain RGB, identical to the original behaviour.
+"""
 import os
 
 from ij import IJ
@@ -15,6 +24,16 @@ except NameError:
     from base_step import StepProvider
 
 
+def _rgblab_converter():
+    """Import the shared, canonical RGB->RGB+Lab file converter."""
+    import sys
+    root = os.path.join(IJ.getDirectory("plugins"), "Cell_Quantification_Toolkit")
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from lib.color_lab import rgb_to_rgblab_file
+    return rgb_to_rgblab_file
+
+
 class IlastikPixelSegmentation(StepProvider):
     stage = "segmentation"
     type_id = "ilastik_pixel"
@@ -24,10 +43,10 @@ class IlastikPixelSegmentation(StepProvider):
     expected_workflow = "Pixel Classification"
 
     def default_params(self):
-        return {'project': ''}
+        return {'project': '', 'append_lab': False}
 
     def build_panel(self, params):
-        from javax.swing import JPanel, JLabel, JComboBox
+        from javax.swing import JPanel, JLabel, JComboBox, JCheckBox
         from java.awt import GridLayout
         params = params or {}
         self._models = self._list_models()
@@ -38,11 +57,19 @@ class IlastikPixelSegmentation(StepProvider):
         if params.get('project') in self._models:
             self._combo.setSelectedItem(params.get('project'))
         panel.add(self._combo)
+        panel.add(JLabel("Append L*a*b* channels:"))
+        self._lab_check = JCheckBox(
+            "Expand crop to R,G,B,L*,a*,b* (classifiers must be trained on RGB+Lab)",
+            bool(params.get('append_lab', False)))
+        panel.add(self._lab_check)
         return panel
 
     def gather_params(self, panel=None):
         proj = self._combo.getSelectedItem() if getattr(self, '_combo', None) is not None else ''
         p = {'project': proj or ''}
+        chk = getattr(self, '_lab_check', None)
+        p['append_lab'] = (bool(chk.isSelected()) if chk is not None
+                           else bool(self.params.get('append_lab', False)))
         models = getattr(self, '_models', None) or self._list_models()
         if proj in models:
             p['project_path'] = models[proj]
@@ -64,7 +91,25 @@ class IlastikPixelSegmentation(StepProvider):
         project = self.params.get('project_path', '')
         temp_path = ctx['temp_path']
         prob_map_path = ctx['prob_map_path']
+        force = ctx.get('force_recalculate', False)
+        append_lab = bool(self.params.get('append_lab', False))
         pixel_prob_path = prob_map_path + "_probabilities.tif"
+
+        # Optional: expand the crop to R,G,B,L*,a*,b* and make it the input for
+        # BOTH this stage and the downstream object classifier. Done BEFORE the
+        # cache check so ctx['temp_path'] is set even when the probability map is
+        # already cached (the object stage still needs the 6-channel image).
+        if append_lab:
+            rgblab_path = prob_map_path + "_rgblab.tif"
+            if force and os.path.exists(rgblab_path):
+                try:
+                    os.remove(rgblab_path)
+                except OSError:
+                    pass
+            if not os.path.exists(rgblab_path):
+                _rgblab_converter()(temp_path, rgblab_path)
+            temp_path = rgblab_path
+            ctx['temp_path'] = rgblab_path
 
         # Reuse the cached probability map unless it was cleared upstream.
         if os.path.exists(pixel_prob_path):

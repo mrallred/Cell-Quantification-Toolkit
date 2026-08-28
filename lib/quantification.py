@@ -18,6 +18,37 @@ from javax.swing.border import EmptyBorder
 
 from java.awt import BorderLayout, FlowLayout, GridLayout, CardLayout
 
+from .workflow_config import make_run_id, cache_dir, workflow_cache_signature
+
+
+def _invalidate_cache_if_changed(cdir, signature):
+    """Ensure the per-workflow cache dir exists; if a stored signature differs
+    from `signature` (classifiers/append_lab changed), drop cached prediction
+    tifs so they are regenerated. Best-effort."""
+    if not os.path.isdir(cdir):
+        os.makedirs(cdir)
+    sig_path = os.path.join(cdir, '.signature')
+    old = None
+    if os.path.exists(sig_path):
+        try:
+            with open(sig_path) as f:
+                old = f.read().strip()
+        except IOError:
+            old = None
+    if old is not None and old != signature:
+        for fn in os.listdir(cdir):
+            if (fn.endswith('_probabilities.tif') or fn.endswith('_objects.tif')
+                    or fn.endswith('_rgblab.tif')):
+                try:
+                    os.remove(os.path.join(cdir, fn))
+                except OSError:
+                    pass
+    try:
+        with open(sig_path, 'w') as f:
+            f.write(signature or '')
+    except IOError:
+        pass
+
 
 def _sanitize_filename(name):
     """
@@ -238,13 +269,24 @@ class QuantificationWorker(SwingWorker):
         Processes each ROI individually after loading all ROIs from the zip file.
         Uses an index to create unique temporary filenames, preventing overwrites.
         """
-        # Generate unique run ID for this processing session (includes microseconds to prevent collisions)
-        self.run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-        
-        # Create run folder structure: Runs/{run_id}/Cell_Selections/
+        # One output folder PER WORKFLOW (run_id = sanitized workflow name), reused
+        # across runs. Exported CSVs are timestamp+settings stamped, so they
+        # accumulate rather than collide.
+        self._definition = getattr(self.settings.get('workflow'), 'definition', None)
+        self.run_id = make_run_id(self._definition)
+
+        # Run folder: Runs/{workflow}/Cell_Selections/  (may already exist).
         self.run_folder = os.path.join(self.project.paths['runs'], self.run_id)
         self.cell_selections_folder = os.path.join(self.run_folder, 'Cell_Selections')
-        os.makedirs(self.cell_selections_folder)  # Creates both folders
+        if not os.path.isdir(self.cell_selections_folder):
+            os.makedirs(self.cell_selections_folder)
+
+        # Per-workflow probability/label cache; cleared if the workflow's
+        # classifiers or append_lab option changed since last time (so edited
+        # models never reuse stale predictions).
+        self.cache_dir = cache_dir(self.project, self.run_id)
+        _invalidate_cache_if_changed(
+            self.cache_dir, workflow_cache_signature(self._definition))
         
         # --- Helper class for updating the progress bar on the GUI thread ---
         class UpdateProgressBarTask(Runnable):
@@ -351,7 +393,7 @@ class QuantificationWorker(SwingWorker):
                         base_name = "{}_{}_{}".format(os.path.splitext(image_obj.filename)[0], safe_roi_name, i)
                         
                         temp_cropped_path = os.path.join(self.project.paths['temp'], base_name + "_cropped.tif")
-                        prob_map_path = os.path.join(self.project.paths['probabilities'], base_name)
+                        prob_map_path = os.path.join(self.cache_dir, base_name)
                         IJ.saveAs(imp_cropped, "Tiff", temp_cropped_path)
 
                         if self.settings.get('show_images', False):

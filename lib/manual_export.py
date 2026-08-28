@@ -81,7 +81,7 @@ def _write_csv(project, run_id, rows, classes):
     custom = _manual_columns(classes)
     headers = ['filename', 'roi_name', 'roi_area', 'bregma_value'] + custom
     final = rexport._aggregate(rows, custom)
-    path = rexport._results_csv_path(project, run_id)
+    path = rexport.stamped_csv_path(project, run_id, "manual")
     with open(path, 'w') as f:
         w = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
         w.writeheader()

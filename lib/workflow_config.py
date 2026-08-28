@@ -16,6 +16,7 @@ import os
 import sys
 import json
 import re
+import datetime
 
 from ij import IJ
 from java.lang import Throwable  # Java exceptions are NOT caught by `except Exception` in Jython
@@ -47,6 +48,45 @@ def sanitize_name(name):
     """Filesystem-safe basename for a workflow definition or class key."""
     s = re.sub(r'[^A-Za-z0-9._-]+', '_', (name or '').strip())
     return s.strip('_') or 'workflow'
+
+
+def make_run_id(definition, when=None):
+    """Stable per-workflow output-folder key = sanitized workflow name.
+
+    Runs are one-folder-PER-WORKFLOW (not per execution): re-running a workflow
+    reuses/overwrites this folder, and exported CSVs (which are timestamp+settings
+    stamped) accumulate inside it. Manual and automated workflows have distinct
+    names, so their keys differ. Falls back to a timestamp only when no definition
+    is available. `when` is accepted for backward-compatible call sites.
+    """
+    if definition is None:
+        return (when or datetime.datetime.now()).strftime('%Y%m%d_%H%M%S_%f')
+    return sanitize_name(getattr(definition, 'name', '') or '') or 'workflow'
+
+
+def cache_dir(project, run_id):
+    """Per-workflow probability/label cache directory (scoped by run_id so two
+    workflows never reuse each other's cached predictions)."""
+    return os.path.join(project.paths['probabilities'], run_id)
+
+
+def workflow_cache_signature(definition):
+    """Short string of everything that would change cached predictions -- the two
+    classifier projects plus the append_lab flag. Stored beside a workflow's
+    cache; when it changes, the cache is invalidated so edited classifiers can't
+    reuse stale labels."""
+    if definition is None:
+        return ""
+    try:
+        sp = (definition.segmentation_spec() or {}).get('params', {}) or {}
+        cp = (definition.classification_spec() or {}).get('params', {}) or {}
+        return "|".join([
+            str(sp.get('project', '')),
+            str(cp.get('project', '')),
+            'lab' if sp.get('append_lab') else 'rgb',
+        ])
+    except Exception:
+        return ""
 
 
 DEFAULT_POST = {
