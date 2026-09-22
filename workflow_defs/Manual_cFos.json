@@ -1,0 +1,19 @@
+{
+  "kind": "manual", 
+  "classes": [
+    {
+      "include": true, 
+      "color": [
+        255, 
+        0, 
+        0
+      ], 
+      "display": "cFos", 
+      "label": 1, 
+      "key": "cfos"
+    }
+  ], 
+  "description": "Place points on cells per class; points inside each ROI are counted and exported.", 
+  "schema_version": 2, 
+  "name": "Manual cFos"
+}

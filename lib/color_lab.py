@@ -2,7 +2,7 @@
 Shared RGB -> (R, G, B, L*, a*, b*) conversion for the RGB+Lab workflow.
 
 ONE canonical implementation, imported by BOTH:
-  - steps/ilastik_pixel_lab.py                        (pipeline segmentation provider)
+  - steps/ilastik_pixel.py                            (segmentation provider, append_lab)
   - macros/Export_RGB_plus_Lab_for_Training.py        (training-image export)
 
 so the channel layout used to TRAIN the ilastik models is byte-for-byte the same

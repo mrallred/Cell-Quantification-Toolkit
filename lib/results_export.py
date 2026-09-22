@@ -2,10 +2,10 @@
 Recompute + write results from cached class-label images.
 
 Post-processing reads the cached `<base>_objects.tif` per ROI, so results can be
-re-derived with new post params without re-running ilastik. Shared by the
-interactive results viewer's "Save (this image)" and "Apply to all & save"
-buttons; mirrors the batch runner's outline/CSV/metadata output so runs stay
-consistent.
+re-derived with new post params without re-running ilastik. Drives the results
+viewer's "Preview" (recompute only) and "Export results (all images)" (recompute
++ write) buttons; mirrors the batch runner's outline/CSV/metadata output so runs
+stay consistent.
 """
 import os
 import csv
@@ -175,18 +175,6 @@ def _aggregate(rows, custom_columns):
     return out
 
 
-def _results_csv_path(project, run_id):
-    """Newest existing results CSV in the run folder (for in-place per-image
-    splicing). New exports use stamped_csv_path() instead."""
-    rf = _run_folder(project, run_id)
-    existing = sorted(glob.glob(os.path.join(rf, 'results_*.csv')) +
-                      glob.glob(os.path.join(rf, '*_results.csv')))
-    if existing:
-        return existing[-1]
-    date = datetime.datetime.now().strftime('%Y%m%d')
-    return os.path.join(rf, date + '_results.csv')
-
-
 def write_run_csv(project, run_id, rows, cell_classes, post_params=None):
     custom = result_columns(cell_classes)
     headers = ['filename', 'roi_name', 'roi_area', 'bregma_value'] + custom
@@ -196,27 +184,6 @@ def write_run_csv(project, run_id, rows, cell_classes, post_params=None):
         w = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
         w.writeheader()
         w.writerows(final)
-    return path
-
-
-def splice_image_into_csv(project, run_id, image_obj, new_rows, cell_classes):
-    """Replace just this image's rows in the run CSV, keeping the rest."""
-    custom = result_columns(cell_classes)
-    headers = ['filename', 'roi_name', 'roi_area', 'bregma_value'] + custom
-    path = _results_csv_path(project, run_id)
-
-    kept = []
-    if os.path.exists(path):
-        with open(path, 'r') as f:
-            for row in csv.DictReader(f):
-                if row.get('filename') != image_obj.filename:
-                    kept.append(row)
-
-    all_rows = kept + _aggregate(new_rows, custom)
-    with open(path, 'w') as f:
-        w = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
-        w.writeheader()
-        w.writerows(all_rows)
     return path
 
 

@@ -4,7 +4,7 @@ A Fiji plugin for project-based, ROI-specific, and automated cell detection and 
 
 A **workflow** is a saved, reusable definition that describes how to quantify cells. There are two kinds:
 
-- **Automated cell classification** — a pluggable pipeline of **segmentation -> classification -> post-processing**, where each stage is filled by a swappable provider. Two ilastik-based providers ship today (pixel classification for segmentation, object classification for classification), and the built-in workflows cover single-label brightfield DAB-cFos and two-colour costained cFos + CtB detection. New methods are added by dropping a provider into `steps/` (no core changes).
+- **Automated cell classification** — a pipeline of **segmentation -> classification -> post-processing**, where each stage is filled by a swappable provider. Two ilastik-based providers are included in the toolkit (pixel classification for segmentation, object classification for classification), and the built-in workflows cover single-label brightfield DAB-cFos and two-colour costained cFos + CtB detection. The toollkit can be extended to use other tools and methods by writing a provider into `steps/` (requires coding).
 - **Manual counting** — you define classes and click on the cells of each class; points inside each ROI are counted and exported.
 
 Workflows are global and reusable across projects, chosen from a list in the main window.
@@ -51,32 +51,36 @@ The best way to install the Cell Quantification Toolkit is from the Fiji update 
 3. **Define ROIs** — Use the ROI Editor to draw analysis regions
 4. **Select/Create a Workflow** — The **Current Workflow** panel shows a list of all workflows; click one to select it, or use **New... / Edit... / Duplicate... / Delete...**. When creating one, choose the type: *Automated cell classification* or *Manual counting*.
 5. **Run Quantification** — Select images and click **Run Quantification**:
-    - *Automated:* runs segmentation + classification only and caches the results (no CSV yet), then opens the **Results** tab.
-    - *Manual:* opens the counting tool — pick a class, click the cells, then **Save & Close**.
-6. **Review & Export (Results tab)** —
+    - *Automated:* runs segmentation + classification only and caches the results (no CSV yet).
+    - *Manual:* opens the counting tool — pick a class, click the cells, then **Save & Close** (points also autosave every minute).
+6. **Review & Export** — Select an image and click **Results**:
     - *Automated:* adjust post-processing (watershed, min size, etc.) with live preview, then **Export results (all images)** to write the outlines and CSV. One setting applies to every image in the run.
     - *Manual:* review the points and click **Export counts (all images)** to write the counts CSV.
 
 ## Project Structure
 
-Each quantification run is self-contained: its results, cell outlines, and settings live together in a timestamped folder under `Runs/`. Re-running an analysis never overwrites a previous one, so you can compare runs side by side.
+Each workflow gets its own self-contained folder under `Runs/`, holding its cell outlines, results, and settings. Re-running a workflow reuses its folder; exported CSVs are stamped with the export time and the post-processing settings used, so nothing is overwritten and you can compare exports (and workflows) side by side.
 
 ```
 MyProject/
 ├── Images/                 # Source images
 ├── ROI_Files/              # ROI selections (.zip)
-├── Probabilities/          # Workflow intermediate outputs (shared across runs)
-├── Runs/                   # One folder per quantification run
-│   └── 20260728_143022_871000/
-│       ├── Cell_Selections/    # Detected cell outlines (.zip)
-│       ├── 20260728_results.csv
-│       └── run_metadata.json   # Workflow, date, and settings for this run
+├── Probabilities/          # Cached workflow intermediates, one subfolder per workflow
+│   └── Brightfield_Costained_cFos_CtB/
+├── Runs/                   # One folder per workflow
+│   └── Brightfield_Costained_cFos_CtB/
+│       ├── Cell_Selections/                        # Detected cell outlines (.zip)
+│       ├── results_20260827_143022__ws1_edge0_min10_circ0p00.csv
+│       └── run_metadata.json                       # Workflow, date, and settings used
 ├── temp/                   # Temporary processing files (auto-cleaned)
-└── project.json            # Project database (images, ROIs, templates)
+└── project.json            # Project database (images + status, ROIs, templates,
+                            #   and the last-used workflow)
 ```
 
+Cached predictions are scoped to the workflow that produced them and fingerprinted by its classifiers, so swapping or retraining a model automatically invalidates the stale labels instead of silently reusing them.
+
 > [!NOTE]
-> Projects created by earlier versions (with `Final_Cell_Selections/`, `Results_DB.csv`, and `processing_log.json` at the project root) are detected on open. The toolkit offers to migrate them to the run-based layout, which removes those old result files — your images and ROIs are preserved.
+> Older project layouts are migrated on open, without deleting anything you can't recover. Projects with one timestamped folder per execution are regrouped by workflow, with the previous `Runs/` kept as `Runs_pre_perworkflow_<timestamp>/`. Much older projects (with `Final_Cell_Selections/`, `Results_DB.csv`, and `processing_log.json` at the project root) are detected too; the toolkit asks before removing those old result files — your images and ROIs are always preserved.
 
 ## Creating Workflows
 
@@ -91,5 +95,11 @@ See [`docs/creating_workflows.md`](docs/creating_workflows.md) for both.
 ## Documentation
 
 - [`docs/architecture.md`](docs/architecture.md) — System architecture and design
-- [`docs/creating_workflows.md`](docs/creating_workflows.md) — Workflow development guide
+- [`docs/creating_workflows.md`](docs/creating_workflows.md) — Workflow development guide, including the optional RGB+L\*a\*b\* input mode
 - [`docs/quantification_overview.md`](docs/quantification_overview.md) — Processing pipeline details
+
+> [!NOTE]
+> The `.ilp` classifiers in `models/` are delivered by the Fiji update site, not
+> by the git repository. A fresh clone therefore has an empty `models/` folder,
+> and the bundled workflows won't validate until you add the classifiers they
+> name (or point them at your own).

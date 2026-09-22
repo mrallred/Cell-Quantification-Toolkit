@@ -1,5 +1,4 @@
 import os
-import csv
 import json
 import datetime
 import traceback
@@ -11,12 +10,12 @@ from ij.gui import PolygonRoi, Roi
 
 from java.lang import Runnable, System
 
-from javax.swing import (JDialog, JPanel, JLabel, JComboBox, JCheckBox,
+from javax.swing import (JDialog, JPanel, JLabel, JCheckBox,
                          JButton, BorderFactory, JProgressBar, SwingWorker,
                          SwingUtilities, JOptionPane)
 from javax.swing.border import EmptyBorder
 
-from java.awt import BorderLayout, FlowLayout, GridLayout, CardLayout
+from java.awt import BorderLayout, FlowLayout, GridLayout
 
 from .workflow_config import make_run_id, cache_dir, workflow_cache_signature
 
@@ -103,8 +102,9 @@ def _ensure_closed_area_roi(roi):
 
 class QuantificationDialog(JDialog):
     """
-    Modal dialog to configure settings for a batch quantification process.
-    Dynamically loads workflows from the workflows folder.
+    Modal dialog to configure the per-run options (show images, force recalculate)
+    for a batch quantification process. The workflow itself is chosen in the main
+    window's Current Workflow panel and passed in already built.
     """
     def __init__(self, parent_frame, selected_images, workflow):
         super(QuantificationDialog, self).__init__(parent_frame, "Quantification Settings", True)
@@ -191,7 +191,7 @@ class QuantificationDialog(JDialog):
             return
 
         self.settings = {
-            'workflow': self.workflow,       # ConfigurableIlastikWorkflow instance
+            'workflow': self.workflow,       # PipelineRunner instance
             'workflow_name': self.definition.name,
             'images': self.selected_images,
             'show_images': self.show_images_checkbox.isSelected(),
@@ -212,33 +212,6 @@ class QuantificationDialog(JDialog):
         self.setLocationRelativeTo(self.getParent())
         self.setVisible(True)
         return self.settings
-    
-    def _get_models(self):
-        """
-        Finds models in the Cell_Quantification_Toolkit folder. 
-        Returns a dictionary of key:value pairs as display_name:full_path
-        """
-        models = {}
-        
-        try:
-            plugins_dir = IJ.getDirectory("plugins")
-            plugin_folder_name = "Cell_Quantification_Toolkit"
-            toolkit_dir = os.path.join(plugins_dir, plugin_folder_name)
-            models_dir = os.path.join(toolkit_dir, "models")
-            if os.path.isdir(models_dir):
-                for f in os.listdir(models_dir):
-                    if f.lower().endswith('.ilp'):
-                        display_name = os.path.splitext(f)[0]
-                        full_path = os.path.join(models_dir, f)
-                        models[display_name] = full_path
-            else:
-                IJ.log("Model directory not found. Please create it at: " + models_dir)
-
-        except Exception as e:
-            IJ.log("Error discovering models: " + str(e))
-            IJ.log(traceback.format_exc())
-
-        return models
 
 
 class ProgressDialog(JDialog):
@@ -261,7 +234,6 @@ class QuantificationWorker(SwingWorker):
         self.project = project
         self.settings = settings
         self.progress_dialog = progress_dialog
-        self.all_results = []
         self.processed_any = False
 
     def doInBackground(self):
@@ -521,7 +493,6 @@ class QuantificationWorker(SwingWorker):
             'workflow_name': self.settings.get('workflow_name', 'Unknown'),
             'workflow_settings': serializable_settings,
             'images_processed': [img.filename for img in self.settings.get('images', [])],
-            'total_results': len(self.all_results)
         }
         # Snapshot the full workflow definition for reproducibility.
         wf = self.settings.get('workflow')

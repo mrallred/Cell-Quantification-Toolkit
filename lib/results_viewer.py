@@ -1,7 +1,6 @@
 import os
 import glob
 import json
-import csv
 
 from ij import IJ
 from ij.gui import Overlay
@@ -273,24 +272,6 @@ class ResultsViewer(WindowAdapter):
         self._populate_overlay_panel()
         self._update_overlay()
         self._update_counts_label(rows, classes, missing)
-
-    def _save_this_image(self, event=None):
-        classes = self._cell_classes_for_run()
-        if not classes:
-            return
-        post = self._post_params()
-        outlines, rows, missing = rexport.recompute_image(self.project, self.image_obj, post, classes, self.selected_run)
-        rexport.write_image_outlines(self.project, self.selected_run, self.image_obj, outlines)
-        rexport.splice_image_into_csv(self.project, self.selected_run, self.image_obj, rows, classes)
-        rexport.update_run_post(self.project, self.selected_run, post)
-        self.outline_rois = outlines
-        self.outline_buckets = self._bucket_outlines(outlines)
-        self._populate_overlay_panel()
-        self._update_overlay()
-        self._update_counts_label(rows, classes, missing)
-        JOptionPane.showMessageDialog(self.dialog,
-                                      "Saved results for {}.".format(self.image_obj.filename),
-                                      "Saved", JOptionPane.INFORMATION_MESSAGE)
 
     def _export_all(self, event=None):
         if self._is_manual_run():

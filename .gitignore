@@ -1,5 +1,10 @@
+# Jython bytecode
 *py.class
-docs/literature_review_cFos_IHC_segmentation.md
-docs/pluggable_pipeline_plan.md
-docs/workflow_generalization_plan.md
+__pycache__/
+
+# macOS
+.DS_Store
+
+# ilastik classifiers: delivered by the Fiji update site, not the repo
+# (a single .ilp can run to hundreds of MB)
 models/*

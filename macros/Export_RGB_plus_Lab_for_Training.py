@@ -11,7 +11,9 @@
 #   You'll be asked whether to convert the active image or a whole folder.
 #
 # OUTPUT
-#   <name>_RGBLab.tif  -- a 6-channel 32-bit composite, per input image.
+#   <name>_RGBLab.tif  -- a 6-channel 8-bit composite, per input image.
+#   Channels: R, G, B (native), then L*x2.55, a*+128, b*+128 -- a FIXED linear
+#   map, never a per-image stretch, so the encoding is identical for every image.
 #
 # The conversion is the shared, canonical one in lib/color_lab.py -- the exact
 # same code the pipeline provider uses. Do not reimplement it here.

@@ -158,25 +158,6 @@ def _copy_run_into_workflow(src, dst):
             pass
 
 
-def _relocate_flat_probabilities(project):
-    prob_dir = project.paths.get('probabilities', '')
-    if not prob_dir or not os.path.isdir(prob_dir):
-        return
-    flat = [f for f in os.listdir(prob_dir)
-            if os.path.isfile(os.path.join(prob_dir, f)) and f.lower().endswith('.tif')]
-    if not flat:
-        return
-    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    backup = os.path.join(prob_dir, '_pre_perworkflow_backup_' + ts)
-    if not os.path.isdir(backup):
-        os.makedirs(backup)
-    for f in flat:
-        try:
-            shutil.move(os.path.join(prob_dir, f), os.path.join(backup, f))
-        except (IOError, OSError):
-            pass
-
-
 def _migrate_runs_to_per_workflow(project):
     runs_dir = project.paths.get('runs', '')
     if not runs_dir or not os.path.isdir(runs_dir):
@@ -219,8 +200,11 @@ def _migrate_runs_to_per_workflow(project):
         _copy_run_into_workflow(src, dst)
         runs += 1
 
-    # NOTE: the legacy flat Probabilities/ cache is left in place; cached_label_path
-    # falls back to it so pre-migration results stay viewable/re-tunable.
+    # NOTE: the legacy flat Probabilities/ cache is left in place, but nothing
+    # reads it -- results_export.cached_label_path is deliberately scoped to the
+    # workflow's own subfolder, since flat files can't be attributed to a workflow.
+    # Pre-migration results stay viewable through each run's saved outlines, not
+    # through recompute.
     _write_migration_marker(runs_dir)
     IJ.log("[CQT] Migrated runs to per-workflow layout: {} workflow(s) from {} run(s), "
            "{} unclassified. Backup: {}".format(workflows, runs, unclassified, backup))
@@ -312,7 +296,6 @@ class Project(object):
         return {
             'images': os.path.join(self.root_dir, 'Images'),
             'rois': os.path.join(self.root_dir, 'ROI_Files'),
-            'processed': os.path.join(self.root_dir, 'Processed_Images'),
             'probabilities': os.path.join(self.root_dir, 'Probabilities'),
             'runs': os.path.join(self.root_dir, 'Runs'),
             'temp': os.path.join(self.root_dir, 'temp'),
