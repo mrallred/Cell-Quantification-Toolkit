@@ -215,3 +215,8 @@ final post-processing stage is shared (`postprocess.run_post`) and consumes the
   and invalidates it when it changes; a parameter missing from it means edited
   settings silently reuse stale predictions.
 - Use `IJ.log("...")` for debugging.
+- **Never commit a zero-byte file.** The ImageJ updater stages downloads in
+  `update/`, and `Installer.moveUpdatedIntoPlace()` treats a staged file of length
+  0 as an instruction to delete the target - there is no separate deletion marker.
+  An empty file either never installs, or fails with
+  `Could not remove '<path>'` on the next restart. Give it at least a docstring.
