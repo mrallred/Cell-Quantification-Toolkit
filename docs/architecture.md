@@ -34,7 +34,8 @@ Cell_Quantification_Toolkit/
 │   ├── pipeline_runner.py   # Runs segmentation -> classification -> post per ROI
 │   ├── manual_counter.py    # Manual point-placement dialog (with autosave)
 │   ├── manual_export.py     # Save points, count points-in-ROI, write counts CSV
-│   └── color_lab.py         # Canonical RGB -> (R,G,B,L*,a*,b*) converter
+│   ├── color_lab.py         # Canonical RGB -> (R,G,B,L*,a*,b*) converter
+│   └── builtin_workflows.py # Bundled definitions as Python data, seeded on first run
 ├── steps/                   # Pluggable pipeline providers
 │   ├── base_step.py         # StepProvider base class
 │   ├── ilastik_pixel.py     # Segmentation provider (ilastik pixel classification, optional RGB+Lab)
@@ -159,6 +160,27 @@ A manual definition drops the stage/post blocks and keeps only `kind: "manual"`,
   the Results viewer (automated only).
 - Legacy v1 definitions (flat `pixel_classifier` / `object_classifier`, no `kind`)
   still load — their stages are derived automatically and upgraded to v2 on save.
+
+### Where the bundled definitions come from
+
+The ImageJ updater only checksums a fixed set of extensions under `plugins/`
+(`.jar .class .txt .ijm .py .rb .clj .js .bsh .groovy .gvy`), so a `.json` in
+`workflow_defs/` is invisible to it and can never travel over the update site.
+The built-ins therefore ship as Python data in `lib/builtin_workflows.py` — a
+tracked `.py` — and `WorkflowStore.seed_builtins()` materializes them into
+`workflow_defs/` on first run.
+
+Seeding is name-based and idempotent: a `.seeded` marker in `workflow_defs/`
+records which definitions have been written, so a built-in the user deletes stays
+deleted, user edits are never overwritten, and built-ins added in a later release
+are still picked up. It matches on the definition's `name` rather than its
+filename, so an older install holding the same workflow under a differently-cased
+file doesn't end up with a duplicate.
+
+The same extension filter blocks `.ilp`, so classifiers are **not** shipped
+either — see [`creating_workflows.md`](creating_workflows.md). The bundled
+automated workflows name models the user has to supply; the manual ones need none
+and work out of the box.
 
 `WorkflowStore` manages the `workflow_defs/` folder (list / load / save / delete).
 The main window shows all definitions in a list; each project remembers its

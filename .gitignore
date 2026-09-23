@@ -5,6 +5,9 @@ __pycache__/
 # macOS
 .DS_Store
 
-# ilastik classifiers: delivered by the Fiji update site, not the repo
-# (a single .ilp can run to hundreds of MB)
+# ilastik classifiers: too large to ship in the repo or on the update site
+# (see docs/creating_workflows.md)
 models/*
+
+# Runtime marker recording which built-in workflows have been seeded
+workflow_defs/.seeded

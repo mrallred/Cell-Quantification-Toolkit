@@ -96,7 +96,8 @@ See [`docs/creating_workflows.md`](docs/creating_workflows.md) for both.
 - [`docs/quantification_overview.md`](docs/quantification_overview.md) — Processing pipeline details
 
 > [!NOTE]
-> The `.ilp` classifiers in `models/` are delivered by the Fiji update site, not
-> by the git repository. A fresh clone therefore has an empty `models/` folder,
-> and the bundled workflows won't validate until you add the classifiers they
-> name (or point them at your own).
+> The `.ilp` classifiers in `models/` ship with neither the git repository nor the
+> Fiji update site — they're tens of MB each, and the updater doesn't carry `.ilp`
+> files. The bundled **manual counting** workflows work immediately; the bundled
+> **automated** workflows name classifiers you need to put in `models/` yourself
+> (or repoint via **Edit...**) before they'll run.

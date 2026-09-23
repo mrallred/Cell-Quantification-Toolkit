@@ -13,6 +13,19 @@ workflow to select it, or use **New... / Edit... / Duplicate... / Delete...**.
 Every definition is saved to `workflow_defs/<name>.json` and is available to all
 projects.
 
+> [!NOTE]
+> **Classifiers are not bundled.** The ImageJ updater only ships a fixed set of
+> file extensions, which excludes `.ilp`, and the models run to tens of MB each.
+> The bundled *automated* workflows name classifiers you have to put in `models/`
+> yourself — until then they'll report "classifier file not found" when you try to
+> run them. Point them at your own `.ilp` via **Edit...**, or build a new
+> workflow. The bundled *manual counting* workflows need no models and work
+> immediately.
+>
+> The bundled definitions themselves are seeded into `workflow_defs/` on first
+> run from `lib/builtin_workflows.py`. Editing or deleting one is permanent — it
+> won't be rewritten or resurrected on the next launch.
+
 ---
 
 ## 1. Create an automated workflow (no code)

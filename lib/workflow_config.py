@@ -26,6 +26,11 @@ from java.lang import Throwable  # Java exceptions are NOT caught by `except Exc
 from .step_registry import create_provider
 from .postprocess import run_post
 from .pipeline_runner import PipelineRunner
+from .builtin_workflows import builtin_definitions
+
+# Records which bundled definitions have already been written into
+# workflow_defs/, so a deleted workflow is never resurrected.
+SEED_MARKER = '.seeded'
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +237,57 @@ class WorkflowStore(object):
             try:
                 os.makedirs(self.dir)
             except OSError:
+                pass
+        self.seed_builtins()
+
+    def seed_builtins(self):
+        """Materialize the bundled definitions from builtin_workflows.py.
+
+        The update site cannot carry .json under plugins/ (the ImageJ updater
+        only checksums a fixed extension list), so the built-ins ship as Python
+        data and are written out here on first run. Idempotent: a name recorded
+        in the '.seeded' marker is never written again, so deleting a built-in
+        workflow makes it stay deleted, while built-ins added in a later release
+        are still picked up. Best-effort -- a read-only plugin folder just means
+        no built-ins, not a crash.
+        """
+        marker = os.path.join(self.dir, SEED_MARKER)
+        seeded = set()
+        if os.path.exists(marker):
+            try:
+                with open(marker, 'r') as f:
+                    seeded = set(ln.strip() for ln in f if ln.strip())
+            except IOError:
+                return
+
+        # Match on the definition's NAME, not just its path: an older install may
+        # hold the same workflow under a differently-cased filename (e.g.
+        # brightfield_cfos.json vs the sanitized Brightfield_cFos.json), which on
+        # a case-sensitive filesystem would otherwise seed a duplicate entry.
+        existing = set(self.names())
+
+        handled = set()
+        for data in builtin_definitions():
+            name = (data.get('name') or '').strip()
+            if not name or name in seeded:
+                continue
+            path = self._path_for(name)
+            if name not in existing and not os.path.exists(path):
+                try:
+                    with open(path, 'w') as f:
+                        json.dump(data, f, indent=2)
+                except IOError as e:
+                    IJ.log("Could not seed built-in workflow '{}': {}".format(name, e))
+                    continue
+            # Recorded even when the workflow already existed, so an install that
+            # predates seeding doesn't get its definitions rewritten later.
+            handled.add(name)
+
+        if handled:
+            try:
+                with open(marker, 'w') as f:
+                    f.write("\n".join(sorted(seeded | handled)) + "\n")
+            except IOError:
                 pass
 
     def _path_for(self, name):

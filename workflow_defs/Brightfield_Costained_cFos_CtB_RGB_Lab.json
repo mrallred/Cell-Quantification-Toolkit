@@ -50,7 +50,7 @@
   "classification": {
     "type": "ilastik_object", 
     "params": {
-      "project": "2026-9-04.2_cFos-CtB_RGB-Lab_object_classifier.ilp"
+      "project": "BrightField_cFos-CtB_RGB-Lab_object_classifier_v1.ilp"
     }
   }, 
   "schema_version": 2, 
@@ -65,7 +65,7 @@
     "type": "ilastik_pixel", 
     "params": {
       "append_lab": true, 
-      "project": "2026-9-04.2_cFos-CtB_RGB-Lab_pixel_classifier.ilp"
+      "project": "BrightField_cFos-CtB_RGB-Lab_pixel_classifier_v1.ilp"
     }
   }
 }
