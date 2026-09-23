@@ -79,9 +79,6 @@ MyProject/
 
 Cached predictions are scoped to the workflow that produced them and fingerprinted by its classifiers, so swapping or retraining a model automatically invalidates the stale labels instead of silently reusing them.
 
-> [!NOTE]
-> Older project layouts are migrated on open, without deleting anything you can't recover. Projects with one timestamped folder per execution are regrouped by workflow, with the previous `Runs/` kept as `Runs_pre_perworkflow_<timestamp>/`. Much older projects (with `Final_Cell_Selections/`, `Results_DB.csv`, and `processing_log.json` at the project root) are detected too; the toolkit asks before removing those old result files — your images and ROIs are always preserved.
-
 ## Creating Workflows
 
 You can build a workflow in the editor with no code (New... in the Current
